@@ -5,7 +5,7 @@ Python client for day-ahead bidding and short-term dispatch optimization with an
 
 from site_calc_operational.api.client import OperationalClient
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "OperationalClient",
