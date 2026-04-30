@@ -5,20 +5,39 @@ SaaS server targeted by :class:`~site_calc_operational.api.client.OperationalCli
 The SaaS server uses async submit-then-poll semantics; the on-prem server blocks
 until the solve completes and returns the full result in the response body.
 
-Minimal public surface for Phase C1 (skeleton):
+Public surface for Phase C2:
+- :class:`BackoffPolicy` -- configures 503 retry behaviour
 - :class:`HealthInfo` -- typed result of ``GET /v1/health``
-- :class:`OnPremClient` -- constructor + :meth:`~OnPremClient.health` + context manager
+- :class:`OnPremClient` -- constructor + :meth:`~OnPremClient.health` +
+  :meth:`~OnPremClient.device_planning` + context manager
 
-Remaining methods (``device_planning``, ``get_run``, etc.) are added in C2-C4.
+Remaining methods (``get_run``, ``list_runs``, ``cancel_active``, etc.) are added in C3-C4.
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 from site_calc_operational.api.onprem_exceptions import from_response
+
+
+@dataclass
+class BackoffPolicy:
+    """Policy for retrying requests that receive a 503 response.
+
+    :param max_retries: Maximum number of retry attempts after the first 503.
+        Set to 0 to attempt exactly once more before raising :class:`~.onprem_exceptions.BusyError`.
+    :param initial_delay_seconds: Starting backoff delay in seconds.  Doubles each attempt.
+    :param max_delay_seconds: Upper bound on the per-attempt delay in seconds.
+    """
+
+    max_retries: int = 3
+    initial_delay_seconds: float = 10.0
+    max_delay_seconds: float = 60.0
 
 
 @dataclass
@@ -51,11 +70,15 @@ class OnPremClient:
 
         with OnPremClient(base_url="https://onprem.example.com", api_key="op_...") as c:
             info = c.health()
+            result = c.device_planning(request_payload)
 
     :param base_url: Base URL of the on-prem server, e.g. ``"https://onprem.example.com"``.
     :param api_key: Bearer token with ``"op_"`` prefix.  Never logged.
     :param timeout_seconds: Per-request timeout in seconds.  The server enforces its own
         600-second cap on solver runs; set this to at least 600 for solve endpoints.
+    :param busy_retry: Retry policy for 503 responses.  Pass ``None`` to disable retries
+        and surface :class:`~site_calc_operational.api.onprem_exceptions.BusyError` immediately.
+        Defaults to :class:`BackoffPolicy` with ``max_retries=3``.
     """
 
     def __init__(
@@ -63,16 +86,20 @@ class OnPremClient:
         base_url: str,
         api_key: str,
         timeout_seconds: float = 600.0,
+        busy_retry: BackoffPolicy | None = None,
     ) -> None:
         """Initialise the client.
 
         :param base_url: Base URL of the on-prem server.
         :param api_key: Bearer token (``op_...``).
         :param timeout_seconds: Per-request timeout in seconds (default 600).
+        :param busy_retry: 503 retry policy; ``None`` disables retries.
+            Defaults to a fresh :class:`BackoffPolicy` with ``max_retries=3``.
         """
         self._base = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._client = httpx.Client(timeout=timeout_seconds)
+        self._busy_retry = busy_retry if busy_retry is not None else BackoffPolicy()
 
     # ------------------------------------------------------------------
     # Resource management
@@ -121,3 +148,76 @@ class OnPremClient:
             db_ok=body["db_ok"],
             active_solve=body["active_solve"],
         )
+
+    # ------------------------------------------------------------------
+    # Authenticated solve endpoints
+    # ------------------------------------------------------------------
+
+    def device_planning(
+        self,
+        request: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit a device-planning solve via ``POST /v1/device-planning`` and return the result.
+
+        The call blocks until the server completes the solve (synchronous HTTP).  On 503
+        the method retries according to :attr:`busy_retry`; after all retries are exhausted
+        it raises :class:`~site_calc_operational.api.onprem_exceptions.BusyError`.
+
+        :param request: Request payload as a plain dict (matches ``DevicePlanningRequest`` schema).
+        :param idempotency_key: If provided, the ``Idempotency-Key`` header is set on the wire
+            request.  The server returns the cached response when the same key was used for a
+            successful run within the last 24 hours.
+        :returns: Response body as a plain dict (``DevicePlanningResponse`` shape).
+        :raises BusyError: If the server returns 503 and all retry attempts are exhausted.
+        :raises AuthenticationError: On 401.
+        :raises ValidationError: On 422.
+        :raises OnPremError: For any other non-200 response.
+        :raises httpx.TimeoutException: If the client-side timeout fires.
+        """
+        return self._post_with_retry("/v1/device-planning", request, idempotency_key)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _post_with_retry(
+        self,
+        path: str,
+        request: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        """POST *path* with JSON body, retrying on 503 per :attr:`busy_retry`.
+
+        :param path: URL path relative to :attr:`_base` (e.g. ``"/v1/device-planning"``).
+        :param request: JSON-serialisable request body.
+        :param idempotency_key: Optional idempotency key; sets the ``Idempotency-Key`` header
+            when not ``None``.
+        :returns: Parsed JSON body from a 200 response.
+        :raises BusyError: After all retries exhausted on repeated 503.
+        :raises OnPremError: For any other non-200 status code.
+        """
+        headers = dict(self._headers)
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+
+        attempt = 0
+        delay = self._busy_retry.initial_delay_seconds if self._busy_retry else 0.0
+
+        while True:
+            r = self._client.post(f"{self._base}{path}", json=request, headers=headers)
+            if r.status_code == 200:
+                return r.json()  # type: ignore[no-any-return]
+            if r.status_code == 503 and self._busy_retry and attempt < self._busy_retry.max_retries:
+                # Honor Retry-After if present and parseable; clamp to max_delay_seconds.
+                try:
+                    retry_after = float(r.headers.get("Retry-After", delay))
+                except (ValueError, TypeError):
+                    retry_after = delay
+                sleep_secs = min(retry_after, self._busy_retry.max_delay_seconds)
+                time.sleep(sleep_secs)
+                attempt += 1
+                delay = min(delay * 2, self._busy_retry.max_delay_seconds)
+                continue
+            raise from_response(r.status_code, r.json() if r.content else None)
