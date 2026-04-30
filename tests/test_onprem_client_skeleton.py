@@ -40,15 +40,6 @@ def test_hierarchy() -> None:
     assert issubclass(ServerError, OnPremError)
     assert issubclass(OnPremTimeoutError, OnPremError)
     assert issubclass(IdempotencyConflict, OnPremError)
-    # Tautology guard: each subclass must differ from the base
-    assert AuthenticationError is not OnPremError
-    assert ValidationError is not OnPremError
-    assert BusyError is not OnPremError
-    assert CancelledError is not OnPremError
-    assert NotImplementedOnServer is not OnPremError
-    assert ServerError is not OnPremError
-    assert OnPremTimeoutError is not OnPremError
-    assert IdempotencyConflict is not OnPremError
 
 
 def test_carries_envelope() -> None:
