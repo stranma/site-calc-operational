@@ -11,7 +11,8 @@ Public surface for Phase C2:
 - :class:`OnPremClient` -- constructor + :meth:`~OnPremClient.health` +
   :meth:`~OnPremClient.device_planning` + context manager
 
-Remaining methods (``get_run``, ``list_runs``, ``cancel_active``, etc.) are added in C3-C4.
+Remaining methods (``get_run``, ``list_runs``, ``cancel_active``) are added in C3;
+``optimal_bidding`` is added in C4.
 """
 
 from __future__ import annotations
@@ -177,6 +178,85 @@ class OnPremClient:
         :raises httpx.TimeoutException: If the client-side timeout fires.
         """
         return self._post_with_retry("/v1/device-planning", request, idempotency_key)
+
+    # ------------------------------------------------------------------
+    # Run read-back and cancel (C3)
+    # ------------------------------------------------------------------
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        """Fetch a single run record via ``GET /v1/runs/{id}``.
+
+        Only the caller's own runs are returned.  A run owned by a different
+        user, or a run that does not exist, both surface as a 404.
+
+        :param run_id: UUID of the run to retrieve.
+        :returns: Parsed run record dict (includes ``request`` and ``response`` fields).
+        :raises AuthenticationError: On 401.
+        :raises OnPremError: On 404 (not found or owned by another user) or any other
+            non-200 response.
+        :raises httpx.TimeoutException: If the request times out.
+        """
+        r = self._client.get(f"{self._base}/v1/runs/{run_id}", headers=self._headers)
+        if r.status_code == 200:
+            return r.json()  # type: ignore[no-any-return]
+        raise from_response(r.status_code, r.json() if r.content else None)
+
+    def list_runs(
+        self,
+        *,
+        endpoint: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        before: str | None = None,
+    ) -> dict[str, Any]:
+        """List the caller's recent runs via ``GET /v1/runs``.
+
+        Runs are ordered by ``created_at DESC``.  Each item omits the full
+        ``request`` / ``response`` bodies -- use :meth:`get_run` to fetch those.
+
+        :param endpoint: Filter by endpoint name (``"device-planning"`` or
+            ``"optimal-bidding"``).  Omit to return runs from any endpoint.
+        :param status: Filter by run status (``"ok"``, ``"error"``, or
+            ``"cancelled"``).  Omit to return runs with any status.
+        :param limit: Maximum number of runs to return (server cap: 200).  Defaults to 50.
+        :param before: ISO-8601 cursor timestamp.  Returns only runs created strictly
+            before this timestamp, enabling pagination via the ``next_before`` field.
+        :returns: Dict with keys ``"runs"`` (list) and ``"next_before"`` (ISO-8601 str or null).
+        :raises AuthenticationError: On 401.
+        :raises OnPremError: For any non-200 response.
+        :raises httpx.TimeoutException: If the request times out.
+        """
+        params: dict[str, str | int] = {"limit": limit}
+        if endpoint is not None:
+            params["endpoint"] = endpoint
+        if status is not None:
+            params["status"] = status
+        if before is not None:
+            params["before"] = before
+
+        r = self._client.get(f"{self._base}/v1/runs", params=params, headers=self._headers)
+        if r.status_code == 200:
+            return r.json()  # type: ignore[no-any-return]
+        raise from_response(r.status_code, r.json() if r.content else None)
+
+    def cancel_active(self) -> dict[str, Any] | None:
+        """Cancel the currently-running solve via ``POST /v1/runs/active/cancel``.
+
+        Returns the cancelled run dict on 200 (a solve was in progress and was killed),
+        or ``None`` on 204 (no solve was active).  Callers should distinguish these:
+        ``None`` is not an error -- the server was simply idle.
+
+        :returns: Cancelled run record dict on 200; ``None`` on 204 (nothing to cancel).
+        :raises AuthenticationError: On 401.
+        :raises OnPremError: For any other non-200/204 response.
+        :raises httpx.TimeoutException: If the request times out.
+        """
+        r = self._client.post(f"{self._base}/v1/runs/active/cancel", headers=self._headers)
+        if r.status_code == 200:
+            return r.json()  # type: ignore[no-any-return]
+        if r.status_code == 204:
+            return None
+        raise from_response(r.status_code, r.json() if r.content else None)
 
     # ------------------------------------------------------------------
     # Internal helpers
