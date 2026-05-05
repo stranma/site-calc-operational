@@ -35,13 +35,15 @@ _INTEGRATION = pytest.mark.skipif(
 
 @_INTEGRATION
 def test_real_solve() -> None:
-    """Failure mode: the client cannot complete a round-trip against a real server, or
-    the response body is missing the top-level ``summary`` key expected from a successful
-    device-planning solve."""
+    """Failure mode: client cannot complete a round-trip against a real server, OR the
+    response body shape regresses (summary missing / null / empty) in a way a presence-only
+    check would silently swallow. Catches both connectivity and wire-shape regressions."""
     base_url = os.environ.get("ONPREM_BASE_URL", "http://localhost:8000")
     api_key = os.environ["ONPREM_API_KEY"]
     fixture_path = Path(os.environ.get("ONPREM_FIXTURE", "../server-onprem/tests/fixtures/site_chp_battery.json"))
     payload = json.loads(fixture_path.read_text())
     with OnPremClient(base_url=base_url, api_key=api_key) as c:
         out = c.device_planning(payload)
-    assert "summary" in out
+    summary = out.get("summary")
+    assert isinstance(summary, dict), f"summary missing or not a dict: {type(summary).__name__}"
+    assert summary, "summary dict is empty -- server returned a degenerate body"
