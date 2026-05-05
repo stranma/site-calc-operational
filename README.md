@@ -143,6 +143,22 @@ ruff format .
 mypy site_calc_operational
 ```
 
+## On-prem (sync) client
+
+For self-hosted deployments running `server-onprem`:
+
+```python
+from site_calc_operational import OnPremClient
+
+with OnPremClient(base_url="https://onprem.example.com", api_key="op_...") as client:
+    health = client.health()
+    print(health.site_calc_version)
+    result = client.device_planning(request_payload)
+    print(result["summary"])
+```
+
+The on-prem client is sync (no polling). For the SaaS server, keep using `OperationalClient` (async).
+
 ## License
 
 MIT License

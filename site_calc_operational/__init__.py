@@ -4,10 +4,18 @@ Python client for day-ahead bidding and short-term dispatch optimization with an
 """
 
 from site_calc_operational.api.client import OperationalClient
+from site_calc_operational.api.onprem_client import (  # noqa: F401
+    BackoffPolicy,
+    HealthInfo,
+    OnPremClient,
+)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
+    "BackoffPolicy",
+    "HealthInfo",
+    "OnPremClient",
     "OperationalClient",
     "__version__",
 ]
