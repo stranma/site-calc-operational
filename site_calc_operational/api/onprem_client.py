@@ -11,7 +11,7 @@ Public surface for Phase C2:
 - :class:`OnPremClient` -- constructor + :meth:`~OnPremClient.health` +
   :meth:`~OnPremClient.device_planning` + context manager
 
-Remaining methods (``get_run``, ``list_runs``, ``cancel_active``) are added in C3;
+Methods ``get_run``, ``list_runs``, and ``cancel_active`` were added in C3;
 ``optimal_bidding`` is added in C4.
 """
 
@@ -257,6 +257,30 @@ class OnPremClient:
         if r.status_code == 204:
             return None
         raise from_response(r.status_code, r.json() if r.content else None)
+
+    # ------------------------------------------------------------------
+    # Bidding endpoints (C4)
+    # ------------------------------------------------------------------
+
+    def optimal_bidding(
+        self,
+        request: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit an optimal bidding request.
+
+        Currently raises :class:`NotImplementedOnServer` because the on-prem server
+        does not yet implement multi-step bid curve generation (see SPEC ss 3.3).
+        The method shape mirrors :meth:`device_planning` so callers can switch to
+        real bidding without code changes once the server endpoint flips from a
+        501 stub to a real solve.
+
+        :param request: payload (currently unused; the server returns 501 regardless).
+        :param idempotency_key: passthrough; sent as Idempotency-Key header.
+        :raises NotImplementedOnServer: always, for now.
+        """
+        return self._post_with_retry("/v1/optimal-bidding", request, idempotency_key)
 
     # ------------------------------------------------------------------
     # Internal helpers
