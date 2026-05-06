@@ -10,7 +10,7 @@ from site_calc_operational.api.onprem_client import (  # noqa: F401
     OnPremClient,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 __all__ = [
     "BackoffPolicy",

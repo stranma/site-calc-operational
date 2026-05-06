@@ -1,6 +1,6 @@
 [project]
 name = "site-calc-operational"
-version = "1.3.0"
+version = "1.4.0"
 description = "Python client for Site-Calc operational optimization (day-ahead bidding, ANS)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["fastmcp>=2.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -35,7 +36,11 @@ dev = [
     "respx>=0.21",
     "ruff>=0.1",
     "mypy>=1.0",
+    "fastmcp>=2.0",
 ]
+
+[project.scripts]
+site-calc-operational-mcp = "site_calc_operational.mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/site-calc/operational-client"
