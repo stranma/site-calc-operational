@@ -84,6 +84,12 @@ class ServerError(OnPremError):
     ...
 
 
+class ClientError(OnPremError):
+    """Raised for unexpected 4xx responses not covered by a more specific exception."""
+
+    ...
+
+
 class OnPremTimeoutError(OnPremError):
     """Raised when a client-side timeout occurs (httpx.TimeoutException)."""
 
@@ -97,7 +103,7 @@ class IdempotencyConflict(OnPremError):  # noqa: N818
 
 
 # Map HTTP status codes to exception classes.
-# Codes not listed here fall back to ServerError.
+# Codes not listed here fall back to ClientError for 4xx and ServerError otherwise.
 _BY_HTTP: dict[int, type[OnPremError]] = {
     401: AuthenticationError,
     422: ValidationError,
@@ -124,10 +130,13 @@ def from_response(http_status: int, body: dict[str, Any] | None) -> OnPremError:
     - 499 -> :class:`CancelledError`
     - 501 -> :class:`NotImplementedOnServer`
     - 503 -> :class:`BusyError`
-    - other 5xx (and anything else) -> :class:`ServerError`
+    - other 4xx -> :class:`ClientError`
+    - other statuses -> :class:`ServerError`
     """
     err = (body or {}).get("error") or {}
-    cls = _BY_HTTP.get(http_status, ServerError)
+    cls = _BY_HTTP.get(http_status)
+    if cls is None:
+        cls = ClientError if 400 <= http_status < 500 else ServerError
     return cls(
         code=err.get("code", "UNKNOWN"),
         message=err.get("message", ""),

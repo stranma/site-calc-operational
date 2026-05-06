@@ -13,6 +13,7 @@ import respx
 from httpx import Response
 
 from site_calc_operational.api.onprem_client import OnPremClient
+from site_calc_operational.api.onprem_exceptions import ClientError
 
 # ---------------------------------------------------------------------------
 # get_run
@@ -31,6 +32,23 @@ def test_get_run() -> None:
     result = c.get_run(run_id)
 
     assert result == expected
+
+
+@respx.mock
+def test_get_run_non_json_error_raises_typed_client_error() -> None:
+    """Failure mode: a proxy/plaintext 404 body raises JSONDecodeError instead of OnPremError."""
+    run_id = "550e8400-e29b-41d4-a716-446655440000"
+    respx.get(f"http://stub/v1/runs/{run_id}").mock(return_value=Response(404, text="not found"))
+
+    c = OnPremClient(base_url="http://stub", api_key="op_x", busy_retry=None)
+
+    try:
+        c.get_run(run_id)
+    except ClientError as exc:
+        assert exc.http_status == 404
+        assert exc.code == "UNKNOWN"
+    else:  # pragma: no cover - pytest assertion clarity
+        raise AssertionError("Expected ClientError")
 
 
 # ---------------------------------------------------------------------------

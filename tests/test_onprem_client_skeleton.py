@@ -15,6 +15,7 @@ from site_calc_operational.api.onprem_exceptions import (
     AuthenticationError,
     BusyError,
     CancelledError,
+    ClientError,
     IdempotencyConflict,
     NotImplementedOnServer,
     OnPremError,
@@ -70,6 +71,8 @@ def test_from_response_status_mapping() -> None:
     assert isinstance(from_response(499, None), CancelledError)
     assert isinstance(from_response(501, None), NotImplementedOnServer)
     assert isinstance(from_response(503, None), BusyError)
+    assert isinstance(from_response(404, None), ClientError)
+    assert isinstance(from_response(409, None), ClientError)
     # Unmapped 5xx codes fall back to ServerError
     assert isinstance(from_response(500, None), ServerError)
     assert isinstance(from_response(502, None), ServerError)

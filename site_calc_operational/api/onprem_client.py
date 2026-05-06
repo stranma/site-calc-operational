@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 
@@ -139,7 +139,7 @@ class OnPremClient:
         """
         r = self._client.get(f"{self._base}/v1/health")
         if not r.is_success:
-            raise from_response(r.status_code, r.json() if r.content else None)
+            _raise_onprem_error(r)
         body = r.json()
         return HealthInfo(
             status=body["status"],
@@ -199,7 +199,7 @@ class OnPremClient:
         r = self._client.get(f"{self._base}/v1/runs/{run_id}", headers=self._headers)
         if r.status_code == 200:
             return r.json()  # type: ignore[no-any-return]
-        raise from_response(r.status_code, r.json() if r.content else None)
+        _raise_onprem_error(r)
 
     def list_runs(
         self,
@@ -237,7 +237,7 @@ class OnPremClient:
         r = self._client.get(f"{self._base}/v1/runs", params=params, headers=self._headers)
         if r.status_code == 200:
             return r.json()  # type: ignore[no-any-return]
-        raise from_response(r.status_code, r.json() if r.content else None)
+        _raise_onprem_error(r)
 
     def cancel_active(self) -> dict[str, Any] | None:
         """Cancel the currently-running solve via ``POST /v1/runs/active/cancel``.
@@ -256,7 +256,7 @@ class OnPremClient:
             return r.json()  # type: ignore[no-any-return]
         if r.status_code == 204:
             return None
-        raise from_response(r.status_code, r.json() if r.content else None)
+        _raise_onprem_error(r)
 
     # ------------------------------------------------------------------
     # Bidding endpoints (C4)
@@ -324,4 +324,17 @@ class OnPremClient:
                 attempt += 1
                 delay = min(delay * 2, self._busy_retry.max_delay_seconds)
                 continue
-            raise from_response(r.status_code, r.json() if r.content else None)
+            _raise_onprem_error(r)
+
+
+def _raise_onprem_error(response: httpx.Response) -> NoReturn:
+    """Raise a typed OnPremError from an HTTP response, tolerating non-JSON bodies."""
+    body: dict[str, Any] | None = None
+    if response.content:
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            body = parsed
+    raise from_response(response.status_code, body)
