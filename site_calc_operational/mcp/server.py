@@ -96,16 +96,28 @@ def _reset_store_for_tests() -> None:
 
 
 def get_version() -> dict[str, Any]:
-    """Return the client package version and (if reachable) the server version.
+    """Return the client package version and (if reachable) the server's versions.
 
     The server-side fields require a valid API key. If the server is unreachable
     or auth fails, the result still includes ``client_version`` plus an
     ``error`` field describing what failed -- this lets the LLM differentiate
     "server down" from "client misconfigured".
 
+    Three independent version streams are surfaced when reachable:
+
+    - ``client_version`` -- this SDK's PyPI package version.
+    - ``server_site_calc_version`` -- version of the underlying optimization
+      library (``site-calc-core``) running inside the on-prem service.
+    - ``service_version`` -- the on-prem FastAPI service's own version.
+
+    No automatic compatibility verdict is computed. The three streams version
+    independently and there is no published cross-version compatibility matrix
+    yet; an LLM-facing ``compatible`` flag based on string equality of unrelated
+    streams produced false-positive incompatibility warnings.
+
     :returns: Dict with at least ``client_version``; on success also
         ``server_status``, ``server_site_calc_version``, ``server_commit_sha``,
-        ``server_db_ok``, ``compatible``.
+        ``server_db_ok``, ``server_active_solve``, ``service_version``.
     """
     out: dict[str, Any] = {"client_version": __version__}
     try:
@@ -122,9 +134,6 @@ def get_version() -> dict[str, Any]:
     out["server_db_ok"] = info.db_ok
     out["server_active_solve"] = info.active_solve
     out["service_version"] = info.service_version
-    client_minor = ".".join(__version__.split(".")[:2])
-    server_minor = ".".join(info.service_version.split(".")[:2])
-    out["compatible"] = client_minor == server_minor
     return out
 
 
