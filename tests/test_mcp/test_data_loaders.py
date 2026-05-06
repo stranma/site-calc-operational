@@ -15,6 +15,26 @@ from site_calc_operational.mcp.data_loaders import (
     save_csv,
 )
 
+
+@pytest.fixture
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend ``example.test`` resolves to a public IP.
+
+    The SSRF guard added for review F2 calls ``socket.getaddrinfo`` before any
+    HTTP request, so a fake hostname like ``example.test`` (which respx mocks
+    by URL pattern) would be rejected as ``DNS resolution failed``. This
+    fixture monkey-patches the resolver so existing respx-based tests still
+    exercise the URL-fetch happy path.
+    """
+    import socket as _socket
+
+    def _fake_getaddrinfo(host: str, *_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+        # Return a single AF_INET tuple pointing at a known-public IP (example.com).
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr("site_calc_operational.mcp.data_loaders.socket.getaddrinfo", _fake_getaddrinfo)
+
+
 # ---------------------------------------------------------------------------
 # resolve_profile
 # ---------------------------------------------------------------------------
@@ -192,7 +212,7 @@ def test_save_csv_rejects_empty_columns(tmp_path: Path) -> None:
 
 
 @respx.mock
-def test_fetch_url_writes_csv_and_returns_metadata(tmp_path: Path) -> None:
+def test_fetch_url_writes_csv_and_returns_metadata(tmp_path: Path, public_dns: None) -> None:
     """Failure mode: metadata reports wrong row count or omits column names,
     so set_timespan(intervals=...) gets the wrong value."""
     body = "hour,price\n" + "\n".join(f"{i},{50 + i}" for i in range(24)) + "\n"
@@ -224,7 +244,7 @@ def test_fetch_url_rejects_unsupported_scheme(tmp_path: Path) -> None:
 
 
 @respx.mock
-def test_fetch_url_refuses_overwrite_by_default(tmp_path: Path) -> None:
+def test_fetch_url_refuses_overwrite_by_default(tmp_path: Path, public_dns: None) -> None:
     """Failure mode: a second fetch silently replaces the user's previous
     download, losing data they wanted to keep."""
     body = "x\n1\n"
@@ -236,7 +256,7 @@ def test_fetch_url_refuses_overwrite_by_default(tmp_path: Path) -> None:
 
 
 @respx.mock
-def test_fetch_url_metadata_error_does_not_break_download(tmp_path: Path) -> None:
+def test_fetch_url_metadata_error_does_not_break_download(tmp_path: Path, public_dns: None) -> None:
     """Failure mode: a malformed CSV body raises during parsing and the file is
     left half-written. The download itself should always succeed; metadata
     failure is a soft warning the LLM can inspect."""

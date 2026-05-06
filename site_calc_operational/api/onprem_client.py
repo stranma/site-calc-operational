@@ -25,6 +25,12 @@ import httpx
 
 from site_calc_operational.api.onprem_exceptions import from_response
 
+# Sentinel for "use the default BackoffPolicy". Distinguishes "caller did not
+# pass busy_retry at all" (use default) from "caller passed None" (disable
+# retries). The previous implementation collapsed both to the default, which
+# silently kept retries enabled even when callers explicitly opted out.
+_USE_DEFAULT_RETRY: object = object()
+
 
 @dataclass
 class BackoffPolicy:
@@ -87,20 +93,28 @@ class OnPremClient:
         base_url: str,
         api_key: str,
         timeout_seconds: float = 600.0,
-        busy_retry: BackoffPolicy | None = None,
+        busy_retry: BackoffPolicy | None = _USE_DEFAULT_RETRY,  # type: ignore[assignment]
     ) -> None:
         """Initialise the client.
 
         :param base_url: Base URL of the on-prem server.
         :param api_key: Bearer token (``op_...``).
         :param timeout_seconds: Per-request timeout in seconds (default 600).
-        :param busy_retry: 503 retry policy; ``None`` disables retries.
-            Defaults to a fresh :class:`BackoffPolicy` with ``max_retries=3``.
+        :param busy_retry: 503 retry policy. Pass ``None`` to disable retries
+            (a 503 raises :class:`BusyError` immediately). Omit the argument
+            to use a default :class:`BackoffPolicy` with ``max_retries=3``.
         """
         self._base = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._client = httpx.Client(timeout=timeout_seconds)
-        self._busy_retry = busy_retry if busy_retry is not None else BackoffPolicy()
+        if busy_retry is _USE_DEFAULT_RETRY:
+            self._busy_retry = BackoffPolicy()
+        else:
+            # busy_retry is now either a BackoffPolicy instance or None (disable retries).
+            self._busy_retry = busy_retry  # type: ignore[assignment]
+        # Mutable view of the most recent server response headers, used by the
+        # MCP layer to detect ``X-Idempotent-Replay`` after a device_planning call.
+        self.last_response_headers: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Resource management
@@ -311,6 +325,7 @@ class OnPremClient:
 
         while True:
             r = self._client.post(f"{self._base}{path}", json=request, headers=headers)
+            self.last_response_headers = dict(r.headers)
             if r.status_code == 200:
                 return r.json()  # type: ignore[no-any-return]
             if r.status_code == 503 and self._busy_retry and attempt < self._busy_retry.max_retries:

@@ -11,13 +11,30 @@ when ``build_request`` materializes a payload.
 from __future__ import annotations
 
 import csv
+import ipaddress
 import json
 import os
 import posixpath
+import socket
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+
+# Hosts/IPs that must not be reachable through ``fetch_url`` even if the user's
+# machine can reach them. The MCP tool sits on the trust boundary between an
+# LLM (which may be running prompt-injected content) and the user's local
+# network, so a public-only allow-list is the right default. Operators who
+# legitimately need to fetch from internal hosts can use ``save_data_file``
+# with content they paste themselves.
+_BLOCKED_HOST_LITERALS = frozenset(
+    {
+        "localhost",
+        "ip6-localhost",
+        "ip6-loopback",
+        "broadcasthost",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Profile resolution
@@ -207,13 +224,36 @@ def _format_number(value: float) -> str:
 
 
 def _resolve_outpath(file_path: str, data_dir: str | None, default_ext: str) -> str:
-    """Resolve a user-supplied path to an absolute file path with a default extension."""
+    """Resolve a user-supplied path to an absolute file path inside the data dir.
+
+    The MCP server runs locally with the user's filesystem privileges. To keep
+    a prompt-injected LLM from writing arbitrary files (``/etc/cron.d/...``,
+    ``~/.ssh/authorized_keys``, ...), we constrain every resolved path to the
+    configured ``data_dir`` (or cwd if unset). Both absolute paths and ``..``
+    traversal are rejected when they would escape the root.
+
+    :param file_path: User-supplied filename or relative path.
+    :param data_dir: Sandbox root; falls back to cwd when ``None``.
+    :param default_ext: Appended to ``file_path`` when it has no extension.
+    :returns: Absolute, normalized path strictly inside ``data_dir``/cwd.
+    :raises ValueError: ``file_path`` resolves outside the allowed root.
+    """
     if not os.path.splitext(file_path)[1]:
         file_path = file_path + default_ext
+    base = os.path.abspath(data_dir or os.getcwd())
     if os.path.isabs(file_path):
-        return file_path
-    base = data_dir or os.getcwd()
-    return os.path.normpath(os.path.join(base, file_path))
+        candidate = os.path.abspath(file_path)
+    else:
+        candidate = os.path.abspath(os.path.join(base, file_path))
+    candidate = os.path.normpath(candidate)
+    base_norm = os.path.normpath(base)
+    # Add the separator so '/data' and '/data2' do not look like a prefix match.
+    if not (candidate == base_norm or candidate.startswith(base_norm + os.sep)):
+        raise ValueError(
+            f"Refusing to write outside the data directory ({base_norm}). "
+            f"Resolved path was {candidate!r}; supply a relative path inside the data dir."
+        )
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +285,7 @@ def fetch_url_to_file(
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Unsupported URL scheme '{parsed.scheme}'; only http/https are allowed.")
+    _assert_public_host(parsed.hostname)
 
     if file_path is None:
         derived = posixpath.basename(parsed.path) or "downloaded.csv"
@@ -254,9 +295,10 @@ def fetch_url_to_file(
         raise FileExistsError(f"File already exists: {abs_path}. Pass overwrite=True to replace it.")
 
     os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
-    response = httpx.get(url, timeout=30.0, follow_redirects=True)
-    response.raise_for_status()
-    data = response.content
+    # Re-validate every redirect target so an attacker cannot 302 us into a
+    # private network. We follow redirects manually instead of letting httpx
+    # do it transparently.
+    data = _fetch_url_safely(url)
     with open(abs_path, "wb") as f:
         f.write(data)
 
@@ -315,3 +357,80 @@ def _is_numeric_column(rows: list[list[str]], idx: int) -> bool:
         except ValueError:
             return False
     return False
+
+
+# ---------------------------------------------------------------------------
+# Network safety
+# ---------------------------------------------------------------------------
+
+
+def _assert_public_host(host: str | None) -> None:
+    """Reject hostnames/IPs that resolve to the loopback or private networks.
+
+    Defense-in-depth against a prompt-injected LLM using ``fetch_url`` to
+    pivot into the user's intranet, AWS instance metadata, or other locally-
+    reachable services. DNS is resolved here so an attacker cannot use a
+    public DNS name that A-records to ``127.0.0.1`` or ``169.254.169.254``.
+
+    :param host: Hostname or IP literal extracted from the URL.
+    :raises ValueError: ``host`` is empty, in the literal blocklist, or
+        resolves to a non-public IP.
+    """
+    if host is None or not host:
+        raise ValueError("URL must include a host.")
+    lowered = host.lower()
+    if lowered in _BLOCKED_HOST_LITERALS:
+        raise ValueError(f"Refusing to fetch from disallowed host '{host}'.")
+
+    # Try to resolve every A/AAAA record. Any non-public IP rejects the URL.
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except socket.gaierror as exc:
+        raise ValueError(f"DNS resolution failed for '{host}': {exc}") from exc
+    for addr in addresses:
+        ip = ipaddress.ip_address(addr)
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError(
+                f"Refusing to fetch from non-public address {addr} (host={host}). "
+                "fetch_url is restricted to public Internet hosts; for private/intranet data "
+                "use save_data_file with content you supply directly."
+            )
+
+
+def _fetch_url_safely(url: str, max_redirects: int = 5) -> bytes:
+    """GET ``url``, validating every redirect target against :func:`_assert_public_host`.
+
+    Manual redirect handling prevents an attacker from issuing a 302 that
+    points the client at a private IP after the initial host check passed.
+
+    :param url: HTTPS or HTTP URL whose host has already been validated.
+    :param max_redirects: Hard cap on the number of redirects to follow.
+    :returns: Response body bytes from the final 200 response.
+    :raises ValueError: Redirect loop, redirect to a private host, or non-2xx terminal status.
+    """
+    seen: set[str] = set()
+    current = url
+    with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+        for _ in range(max_redirects + 1):
+            if current in seen:
+                raise ValueError(f"Redirect loop detected at {current}.")
+            seen.add(current)
+            response = client.get(current)
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    raise ValueError(f"Redirect from {current} missing Location header.")
+                target = httpx.URL(current).join(location)
+                _assert_public_host(target.host)
+                current = str(target)
+                continue
+            response.raise_for_status()
+            return response.content
+    raise ValueError(f"Exceeded redirect limit ({max_redirects}) starting from {url}.")

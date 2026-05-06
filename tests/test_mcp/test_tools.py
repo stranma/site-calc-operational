@@ -298,6 +298,12 @@ def test_save_data_file_writes_and_reports_rows(tmp_path: Path, monkeypatch: pyt
 def test_fetch_url_uses_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Failure mode: SITE_CALC_OPERATIONAL_DATA_DIR is ignored, so downloads
     land in cwd and the LLM can't relocate them."""
+    import socket as _socket
+
+    def _fake_getaddrinfo(host: str, *_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr("site_calc_operational.mcp.data_loaders.socket.getaddrinfo", _fake_getaddrinfo)
     monkeypatch.setenv("SITE_CALC_OPERATIONAL_DATA_DIR", str(tmp_path))
     body = "h\n1\n2\n"
     respx.get("http://example.test/d.csv").mock(return_value=Response(200, text=body))

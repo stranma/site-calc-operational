@@ -320,16 +320,25 @@ def solve(scenario_id: str, idempotency_key: str | None = None) -> dict[str, Any
     :raises OnPremError: Server returned a non-200 status.
     """
     payload = _store.build_request(scenario_id)
-    response = _get_client().device_planning(payload, idempotency_key=idempotency_key)
+    client = _get_client()
+    response = client.device_planning(payload, idempotency_key=idempotency_key)
+
+    # The server signals a cached idempotency replay via the X-Idempotent-Replay
+    # header. Plumbing it through is what lets the LLM tell "your solve ran" from
+    # "the server returned a previous answer for the same idempotency key".
+    replay = client.last_response_headers.get("x-idempotent-replay", "").lower() == "true"
 
     run_id = response.get("run_id", "")
-    if run_id:
+    # Don't append the same run_id twice when the server replays a cached response.
+    scenario_runs = _store.get(scenario_id).runs
+    if run_id and run_id not in scenario_runs:
         _store.record_run(scenario_id, run_id)
     return {
         "scenario_id": scenario_id,
         "run_id": run_id,
         "solver_status": response.get("summary", {}).get("solver_status", "unknown"),
         "summary": response.get("summary", {}),
+        "replay": replay,
     }
 
 
