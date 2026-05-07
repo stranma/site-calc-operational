@@ -2,10 +2,12 @@
 
 import time
 import warnings
-from typing import Optional, Any
+from importlib.metadata import version as _pkg_version
+from typing import Any, Optional
+
 import httpx
 
-from site_calc_operational import __version__
+__version__ = _pkg_version("site-calc-operational")
 
 
 class OperationalClient:
