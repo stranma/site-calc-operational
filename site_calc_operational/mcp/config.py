@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,21 +30,32 @@ def get_data_dir() -> str:
     immediately. Always returns an absolute string -- never ``None`` -- so the
     SSRF/path-containment guard has a concrete root to validate against.
 
+    Cached: callers can invoke this on every MCP tool call without per-call
+    filesystem syscalls. Tests that flip ``SITE_CALC_OPERATIONAL_DATA_DIR``
+    mid-process should call :func:`_clear_data_dir_cache` to invalidate.
+
     :returns: Absolute path to the data directory.
     """
-    env = os.environ.get("SITE_CALC_OPERATIONAL_DATA_DIR")
-    if env:
-        candidate = Path(env).expanduser().resolve()
+    return _resolve_data_dir(os.environ.get("SITE_CALC_OPERATIONAL_DATA_DIR"))
+
+
+@functools.lru_cache(maxsize=None)
+def _resolve_data_dir(env_value: str | None) -> str:
+    """Cached resolver. Keyed by the env-var value so changing it invalidates."""
+    if env_value:
+        candidate = Path(env_value).expanduser().resolve()
     else:
         home = Path.home()
         documents = home / "Documents"
-        # If Documents doesn't exist, drop straight to ~/site-calc-data --
-        # don't try to create Documents itself (that would be intrusive on
-        # systems that intentionally lack it).
         base = documents if documents.is_dir() else home
         candidate = (base / _DEFAULT_DATA_SUBDIR).resolve()
     candidate.mkdir(parents=True, exist_ok=True)
     return str(candidate)
+
+
+def _clear_data_dir_cache() -> None:
+    """Drop the cached data-dir resolution. Test-only hook."""
+    _resolve_data_dir.cache_clear()
 
 
 _DEFAULT_API_URL = "http://localhost:8000"

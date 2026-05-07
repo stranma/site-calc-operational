@@ -164,12 +164,12 @@ def from_response(http_status: int, body: dict[str, Any] | None) -> OnPremError:
     :returns: A typed ``OnPremError`` subclass instance.
     """
     err = (body or {}).get("error") or {}
-    code = err.get("code", "UNKNOWN")
-    cls = _BY_CODE.get(code) or _BY_HTTP.get(http_status)
+    raw_code = err.get("code")  # None when the envelope is missing entirely
+    cls = (_BY_CODE.get(raw_code) if raw_code else None) or _BY_HTTP.get(http_status)
     if cls is None:
         cls = ClientError if 400 <= http_status < 500 else ServerError
     return cls(
-        code=code,
+        code=raw_code or "UNKNOWN",
         message=err.get("message", ""),
         details=err.get("details"),
         tracking=err.get("tracking"),
