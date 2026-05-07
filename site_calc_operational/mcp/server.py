@@ -20,13 +20,21 @@ managed by :func:`_get_client`.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import datetime as dt
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
 from site_calc_operational import __version__
 from site_calc_operational.api.onprem_client import OnPremClient
-from site_calc_operational.api.onprem_exceptions import OnPremError
+from site_calc_operational.api.onprem_exceptions import (
+    InfeasibleScenarioError,
+    OnPremError,
+    UnboundedScenarioError,
+)
 from site_calc_operational.mcp.config import Config, get_data_dir
 from site_calc_operational.mcp.data_loaders import fetch_url_to_file, save_csv
 from site_calc_operational.mcp.scenario import (
@@ -107,6 +115,9 @@ If solve() raises InfeasibleScenarioError (HTTP 422, code=INFEASIBLE), the LP/MI
   4. Battery / heat_accumulator parameters: initial_soc + max charge < required state by the next must-run period.
   5. Profile length mismatch: review_scenario should catch this before solve(), but if it slips through the LP becomes infeasible.
 Recovery: relax the binding constraint, add a buffer device (battery, market import), or re-check profile arithmetic. The exception's message often names the offending constraint when the underlying solver produced one.
+
+DEBUG LP FILE
+On InfeasibleScenarioError / UnboundedScenarioError, the on-prem server inlines the optimizer's debug LP file in the response, and this MCP server writes it to disk under the configured data directory before re-raising. The path is in ``exc.details["debug_lp_path"]`` (e.g. ``C:\\Users\\you\\Documents\\site-calc-data\\debug_problem_<scenario>_<timestamp>.lp``). Tell the user about this path -- they can inspect the LP with any LP solver / pulp / cbc / glpsol to find which constraint is over-determined. If the LP was too large to inline (>~1 MB), ``exc.details["debug_lp_truncated"]`` is True and the file lives only inside the server container.
 
 UNBOUNDED OBJECTIVE (rare)
 If solve() raises UnboundedScenarioError (HTTP 422, code=UNBOUNDED), the optimizer found an unlimited revenue source -- typically an export device with no maximum-flow cap, or an import with negative price and no upper limit. Add the missing bound (max_export, max_import) and re-solve.
@@ -398,7 +409,16 @@ def solve(scenario_id: str, idempotency_key: str | None = None) -> dict[str, Any
     """
     payload = _store.build_request(scenario_id)
     client = _get_client()
-    response = client.device_planning(payload, idempotency_key=idempotency_key)
+    try:
+        response = client.device_planning(payload, idempotency_key=idempotency_key)
+    except (InfeasibleScenarioError, UnboundedScenarioError) as exc:
+        # The server inlines the optimizer's debug LP file as base64 in
+        # exc.details["debug_lp_b64"]. The LLM has no way to use a base64 blob,
+        # but the user does -- decode it, save it under the configured data
+        # dir, and replace the blob in details with the absolute path so the
+        # LLM can tell the user where to find the file.
+        _materialise_debug_lp(exc, scenario_id)
+        raise
 
     # The server signals a cached idempotency replay via the X-Idempotent-Replay
     # header. Plumbing it through is what lets the LLM tell "your solve ran" from
@@ -533,6 +553,46 @@ def fetch_url(url: str, file_path: str | None = None, overwrite: bool = False) -
         ``columns`` / ``numeric_columns`` for CSV.
     """
     return fetch_url_to_file(url=url, data_dir=get_data_dir(), file_path=file_path, overwrite=overwrite)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for solve()'s exception path
+# ---------------------------------------------------------------------------
+
+
+def _materialise_debug_lp(exc: InfeasibleScenarioError | UnboundedScenarioError, scenario_id: str) -> None:
+    """Save the inlined LP file to disk and rewrite ``exc.details`` for the LLM.
+
+    The on-prem server returns the optimizer's debug LP as a base64 blob in
+    ``exc.details["debug_lp_b64"]``. That blob is useful to a human (it can be
+    fed to ``cbc``, ``glpsol``, or PuLP for diagnosis) but a 100 KB base64
+    string in the LLM's context is just expensive noise. This function decodes
+    the blob, writes the bytes under :func:`get_data_dir`, and replaces the
+    blob with ``debug_lp_path`` (an absolute filesystem path) so the LLM can
+    point the user at the file without paying for the bytes itself.
+
+    Mutates ``exc.details`` in place. Best-effort: any IO error is captured
+    in ``debug_lp_save_error`` so the LLM can still surface a useful message.
+    """
+    if exc.details is None or "debug_lp_b64" not in exc.details:
+        return
+    blob = exc.details.pop("debug_lp_b64")
+    try:
+        data = base64.b64decode(blob, validate=True)
+    except (ValueError, binascii.Error) as decode_exc:
+        exc.details["debug_lp_save_error"] = f"base64 decode failed: {decode_exc}"
+        return
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"debug_problem_{scenario_id[:8]}_{timestamp}.lp"
+    target_dir = Path(get_data_dir())
+    target_path = target_dir / filename
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(data)
+    except OSError as write_exc:
+        exc.details["debug_lp_save_error"] = f"{type(write_exc).__name__}: {write_exc}"
+        return
+    exc.details["debug_lp_path"] = str(target_path)
 
 
 # ---------------------------------------------------------------------------

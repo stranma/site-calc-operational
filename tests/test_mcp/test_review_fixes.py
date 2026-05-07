@@ -290,6 +290,89 @@ def test_solve_raises_infeasible_scenario_error_on_422() -> None:
 
 
 @respx.mock
+def test_solve_materialises_debug_lp_to_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failure mode: the server returns a base64 LP blob in details, but the
+    MCP layer leaves it as base64 -- the LLM cannot use it and the user has
+    nowhere to point a debugger.
+    """
+    import base64 as _b64
+
+    from site_calc_operational.api.onprem_exceptions import InfeasibleScenarioError
+
+    monkeypatch.setenv("SITE_CALC_OPERATIONAL_DATA_DIR", str(tmp_path))
+
+    fake_lp = b"\\Problem name: synthetic\\\nMinimize\n obj: x\nEnd\n"
+    respx.post("http://stub/v1/device-planning").mock(
+        return_value=Response(
+            422,
+            json={
+                "error": {
+                    "code": "INFEASIBLE",
+                    "message": "synthetic",
+                    "details": {
+                        "hint": "add a buffer",
+                        "debug_lp_filename": "debug_problem.lp",
+                        "debug_lp_size_bytes": len(fake_lp),
+                        "debug_lp_b64": _b64.b64encode(fake_lp).decode("ascii"),
+                    },
+                }
+            },
+        )
+    )
+    sid = _build_solveable_scenario()
+    with pytest.raises(InfeasibleScenarioError) as excinfo:
+        srv.solve(sid)
+
+    details = excinfo.value.details
+    assert details is not None
+    # The base64 blob is gone; an absolute path takes its place.
+    assert "debug_lp_b64" not in details
+    assert "debug_lp_path" in details
+    saved_path = Path(details["debug_lp_path"])
+    assert saved_path.exists()
+    assert saved_path.read_bytes() == fake_lp
+    # File must be inside the data dir, not anywhere else.
+    assert os.path.normcase(str(saved_path)).startswith(os.path.normcase(str(tmp_path)))
+
+
+@respx.mock
+def test_solve_handles_truncated_debug_lp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Failure mode: the truncation marker for an oversized LP gets stripped
+    on the way through the SDK, so the LLM sees neither path nor warning."""
+    from site_calc_operational.api.onprem_exceptions import InfeasibleScenarioError
+
+    monkeypatch.setenv("SITE_CALC_OPERATIONAL_DATA_DIR", str(tmp_path))
+
+    respx.post("http://stub/v1/device-planning").mock(
+        return_value=Response(
+            422,
+            json={
+                "error": {
+                    "code": "INFEASIBLE",
+                    "message": "huge LP",
+                    "details": {
+                        "hint": "x",
+                        "debug_lp_filename": "debug_problem.lp",
+                        "debug_lp_size_bytes": 50_000_000,
+                        "debug_lp_truncated": True,
+                    },
+                }
+            },
+        )
+    )
+    sid = _build_solveable_scenario()
+    with pytest.raises(InfeasibleScenarioError) as excinfo:
+        srv.solve(sid)
+    details = excinfo.value.details
+    assert details is not None
+    assert details.get("debug_lp_truncated") is True
+    assert "debug_lp_path" not in details  # nothing to materialise
+
+
+@respx.mock
 def test_solve_does_not_double_record_replayed_run() -> None:
     """Failure mode: solve() records the same run_id twice when the server
     replays it, inflating run_count in list_scenarios."""
