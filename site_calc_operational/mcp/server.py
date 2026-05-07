@@ -99,12 +99,26 @@ Import devices (electricity_import, gas_import) -- "price" is what you PAY (posi
 Export devices (electricity_export, heat_export) -- "price" is what you RECEIVE (positive = revenue). Flow is positive when exporting.
 All prices in EUR/MWh, capacities in MW, energies in MWh. The summary's expected_profit is total revenue minus total cost over the horizon.
 
+INFEASIBILITY (most common modeling error)
+If solve() raises InfeasibleScenarioError (HTTP 422, code=INFEASIBLE), the LP/MIP solver determined the request describes a problem with NO feasible solution. This is a modeling error, not a server bug. Common causes, in rough order of frequency:
+  1. Demand exceeds supply: a heat_demand or electricity_demand curve cannot be satisfied by the configured generation, storage, and market interfaces. Sum the demand profile and verify the supplies (max_import sum + generation capacity * intervals + storage discharge) can cover it.
+  2. Missing market interface: the scenario consumes electricity but has no electricity_import device, or generates heat with no heat_demand / heat_export to absorb it. Materials must balance every interval.
+  3. Contradictory schedule constraints: must_run=1 at an interval where can_run=0, or min_continuous_run_hours longer than the timespan.
+  4. Battery / heat_accumulator parameters: initial_soc + max charge < required state by the next must-run period.
+  5. Profile length mismatch: review_scenario should catch this before solve(), but if it slips through the LP becomes infeasible.
+Recovery: relax the binding constraint, add a buffer device (battery, market import), or re-check profile arithmetic. The exception's message often names the offending constraint when the underlying solver produced one.
+
+UNBOUNDED OBJECTIVE (rare)
+If solve() raises UnboundedScenarioError (HTTP 422, code=UNBOUNDED), the optimizer found an unlimited revenue source -- typically an export device with no maximum-flow cap, or an import with negative price and no upper limit. Add the missing bound (max_export, max_import) and re-solve.
+
 ERROR HANDLING
+  - InfeasibleScenarioError (HTTP 422, code=INFEASIBLE) -- see above.
+  - UnboundedScenarioError (HTTP 422, code=UNBOUNDED) -- see above.
+  - ValidationError (HTTP 422, code=VALIDATION_ERROR / TRANSLATION_ERROR) -- schema-level rejection (wrong types, unsupported device kind, malformed timespan). The "message" field names the offending property; fix the scenario and re-solve.
   - BusyError (HTTP 503) -- another solve is in progress. The OnPremClient retries automatically with exponential backoff; if it surfaces, the server has been busy past the retry budget. Wait or call cancel_active.
-  - ValidationError (HTTP 422) -- the server rejected the payload. The "message" field names the offending property; fix the scenario and re-solve.
   - CancelledError (HTTP 499) -- the run was aborted via cancel_active. Not a code error.
   - NotImplementedOnServer (HTTP 501) -- only optimal_bidding raises this today; stick to device_planning / solve.
-  - ServerError (HTTP 5xx) -- treat as transient; retry once with the same idempotency_key.
+  - ServerError (HTTP 5xx) -- genuine server-side bug. Treat as transient; retry once with the same idempotency_key, then escalate.
 
 VERSIONING
 Three independent version streams surface from get_version: client_version (this SDK), server_site_calc_version (optimization core inside the on-prem service), service_version (the FastAPI service itself). They are NOT expected to match -- there is no published cross-version compatibility matrix.

@@ -221,6 +221,74 @@ def test_solve_reports_replay_true_when_header_present() -> None:
     assert out["replay"] is True, "Header X-Idempotent-Replay=true must surface as replay=True"
 
 
+# ---------------------------------------------------------------------------
+# Code-aware from_response for INFEASIBLE / UNBOUNDED on HTTP 422
+# ---------------------------------------------------------------------------
+
+
+def test_from_response_maps_infeasible_code_over_status() -> None:
+    """Failure mode: 422 INFEASIBLE is silently classified as ValidationError
+    (the default for 422), so callers cannot distinguish a schema-level reject
+    from a modeling error that the LP solver caught."""
+    from site_calc_operational.api.onprem_exceptions import (
+        InfeasibleScenarioError,
+        ValidationError,
+        from_response,
+    )
+
+    body = {"error": {"code": "INFEASIBLE", "message": "no feasible assignment", "details": {"hint": "X"}}}
+    exc = from_response(422, body)
+    assert isinstance(exc, InfeasibleScenarioError)
+    assert not isinstance(exc, ValidationError)
+    assert exc.code == "INFEASIBLE"
+    assert exc.details == {"hint": "X"}
+
+
+def test_from_response_maps_unbounded_code_over_status() -> None:
+    """Failure mode: 422 UNBOUNDED falls through to ValidationError, so an
+    LLM cannot specifically catch the unbounded case to suggest adding a bound."""
+    from site_calc_operational.api.onprem_exceptions import UnboundedScenarioError, from_response
+
+    body = {"error": {"code": "UNBOUNDED", "message": "objective is unbounded"}}
+    exc = from_response(422, body)
+    assert isinstance(exc, UnboundedScenarioError)
+
+
+def test_from_response_falls_back_to_status_for_generic_422() -> None:
+    """Failure mode: code-based mapping accidentally swallows the existing
+    422->ValidationError default for schema-level rejects."""
+    from site_calc_operational.api.onprem_exceptions import ValidationError, from_response
+
+    body = {"error": {"code": "VALIDATION_ERROR", "message": "field 'name' is required"}}
+    exc = from_response(422, body)
+    assert isinstance(exc, ValidationError)
+
+
+@respx.mock
+def test_solve_raises_infeasible_scenario_error_on_422() -> None:
+    """Failure mode: the MCP solve() tool returns a generic OnPremError on
+    infeasibility, so the LLM driving it cannot catch the specific class."""
+    from site_calc_operational.api.onprem_exceptions import InfeasibleScenarioError
+
+    respx.post("http://stub/v1/device-planning").mock(
+        return_value=Response(
+            422,
+            json={
+                "error": {
+                    "code": "INFEASIBLE",
+                    "message": "demand exceeds supply",
+                    "details": {"hint": "add a market import"},
+                }
+            },
+        )
+    )
+    sid = _build_solveable_scenario()
+    with pytest.raises(InfeasibleScenarioError) as excinfo:
+        srv.solve(sid)
+    assert excinfo.value.code == "INFEASIBLE"
+    assert "demand exceeds supply" in excinfo.value.message
+
+
 @respx.mock
 def test_solve_does_not_double_record_replayed_run() -> None:
     """Failure mode: solve() records the same run_id twice when the server

@@ -102,6 +102,31 @@ class IdempotencyConflict(OnPremError):  # noqa: N818
     ...
 
 
+class InfeasibleScenarioError(OnPremError):
+    """Raised when the optimizer reports the problem has no feasible solution.
+
+    Sent by the on-prem server with HTTP 422 and ``code="INFEASIBLE"`` when the
+    LP/MIP solver determines no assignment of variables satisfies all
+    constraints. Common causes: demand exceeds supply, profile lengths
+    inconsistent with timespan, contradictory schedule constraints
+    (``must_run`` overlapping ``can_run=0``), missing market interface for a
+    required material.
+    """
+
+    ...
+
+
+class UnboundedScenarioError(OnPremError):
+    """Raised when the optimizer reports the objective is unbounded.
+
+    Sent with HTTP 422 and ``code="UNBOUNDED"``. Usually means the request
+    lacks a price-bounded constraint on a free source of revenue (e.g. an
+    export device with no maximum flow).
+    """
+
+    ...
+
+
 # Map HTTP status codes to exception classes.
 # Codes not listed here fall back to ClientError for 4xx and ServerError otherwise.
 _BY_HTTP: dict[int, type[OnPremError]] = {
@@ -112,6 +137,14 @@ _BY_HTTP: dict[int, type[OnPremError]] = {
     503: BusyError,
 }
 
+# Map error-envelope codes to exception classes. Wins over the HTTP-status map
+# so that two distinct semantics on the same status (e.g. schema validation vs
+# infeasible LP, both 422) get distinct exception types.
+_BY_CODE: dict[str, type[OnPremError]] = {
+    "INFEASIBLE": InfeasibleScenarioError,
+    "UNBOUNDED": UnboundedScenarioError,
+}
+
 
 def from_response(http_status: int, body: dict[str, Any] | None) -> OnPremError:
     """Build a typed :class:`OnPremError` from an HTTP status code and parsed body.
@@ -120,25 +153,23 @@ def from_response(http_status: int, body: dict[str, Any] | None) -> OnPremError:
     server's structured error envelope (``body["error"]``).  Falls back to
     sensible defaults when fields are absent.
 
+    Resolution order for the exception class:
+
+    1. Match on ``error.code`` (e.g. ``"INFEASIBLE"`` -> :class:`InfeasibleScenarioError`).
+    2. Match on HTTP status (e.g. 401 -> :class:`AuthenticationError`).
+    3. Fall back to :class:`ClientError` for unmapped 4xx, :class:`ServerError` otherwise.
+
     :param http_status: The HTTP status code returned by the server.
     :param body: The parsed JSON response body, or ``None`` if the body was empty.
     :returns: A typed ``OnPremError`` subclass instance.
-
-    Mapping:
-    - 401 -> :class:`AuthenticationError`
-    - 422 -> :class:`ValidationError`
-    - 499 -> :class:`CancelledError`
-    - 501 -> :class:`NotImplementedOnServer`
-    - 503 -> :class:`BusyError`
-    - other 4xx -> :class:`ClientError`
-    - other statuses -> :class:`ServerError`
     """
     err = (body or {}).get("error") or {}
-    cls = _BY_HTTP.get(http_status)
+    code = err.get("code", "UNKNOWN")
+    cls = _BY_CODE.get(code) or _BY_HTTP.get(http_status)
     if cls is None:
         cls = ClientError if 400 <= http_status < 500 else ServerError
     return cls(
-        code=err.get("code", "UNKNOWN"),
+        code=code,
         message=err.get("message", ""),
         details=err.get("details"),
         tracking=err.get("tracking"),
