@@ -70,6 +70,13 @@ target-version = "py310"
 select = ["E", "F", "I", "N", "W"]
 ignore = []
 
+[tool.ruff.lint.per-file-ignores]
+# server.py contains a multi-line LLM instructions block whose paragraphs
+# read better as long natural-prose lines than as artificially line-wrapped
+# fragments. Ruff's 120-char limit is the right default for code; relaxing
+# it for this one file keeps the rule honest everywhere else.
+"site_calc_operational/mcp/server.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
