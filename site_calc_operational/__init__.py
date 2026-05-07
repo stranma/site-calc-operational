@@ -1,16 +1,25 @@
-"""Site-Calc Operational Client
+"""Site-Calc Operational Client.
 
-Python client for day-ahead bidding and short-term dispatch optimization with ancillary services.
+Python client for day-ahead bidding and short-term dispatch optimization with
+ancillary services. Two top-level clients are exposed:
+
+- :class:`OperationalClient` -- async client for the SaaS REST API.
+- :class:`OnPremClient` -- sync client for self-hosted ``server-onprem``
+  deployments. Companion :class:`BackoffPolicy` and :class:`HealthInfo`
+  dataclasses are also exported.
+
+An optional MCP server (extra: ``site-calc-operational[mcp]``) wraps the
+on-prem client for LLM-driven scenario assembly.
 """
 
 from site_calc_operational.api.client import OperationalClient
-from site_calc_operational.api.onprem_client import (  # noqa: F401
+from site_calc_operational.api.onprem_client import (
     BackoffPolicy,
     HealthInfo,
     OnPremClient,
 )
 
-__version__ = "1.4.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "BackoffPolicy",
@@ -19,39 +28,3 @@ __all__ = [
     "OperationalClient",
     "__version__",
 ]
-
-# Note: Model imports are commented out until the models module is fully implemented.
-# Once implemented, uncomment the following:
-#
-# from site_calc_operational.models import (
-#     # Core models
-#     TimeSpan,
-#     Resolution,
-#     Location,
-#     # Device models
-#     Battery,
-#     CHP,
-#     HeatAccumulator,
-#     Photovoltaic,
-#     HeatDemand,
-#     ElectricityDemand,
-#     ElectricityImport,
-#     ElectricityExport,
-#     GasImport,
-#     HeatExport,
-#     # Site and configuration
-#     Site,
-#     Schedule,
-#     AncillaryServices,
-#     MarketForecasts,
-#     OpportunityCosts,
-#     LockedReservations,
-#     OptimizationConfig,
-#     # Request models
-#     OptimalBiddingRequest,
-#     DevicePlanningRequest,
-#     # Response models
-#     Job,
-#     OptimalBiddingResponse,
-#     DevicePlanningResponse,
-# )
