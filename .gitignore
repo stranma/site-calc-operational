@@ -7,3 +7,8 @@ coverage.json
 *.egg-info/
 build/
 dist/
+
+# Secret files (never commit)
+.env
+.env.*
+!.env.example
