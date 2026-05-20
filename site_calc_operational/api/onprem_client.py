@@ -297,6 +297,96 @@ class OnPremClient:
         return self._post_with_retry("/v1/optimal-bidding", request, idempotency_key)
 
     # ------------------------------------------------------------------
+    # Reservation-bid endpoints (C5+)
+    # ------------------------------------------------------------------
+
+    def build_reservation_bids(
+        self,
+        request: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a day-ahead reservation-bid plan via ``POST /v1/reservation-bids``.
+
+        The endpoint runs the planner and bundles the planner's own
+        ``most_probable_realization`` and a re-evaluated ``expected_revenue``
+        into the response, so callers get plan + realization + revenue
+        cross-check in one round-trip. The call blocks until the server
+        completes the solve.
+
+        :param request: Payload matching the server's ``ReservationBidPlanRequest``
+            (``sites``, ``timespan``, ``services``, ``acceptance``, optional
+            ``expected_activation_revenue`` and ``assume_maximal``).
+        :param idempotency_key: ``Idempotency-Key`` header passthrough. The
+            server replays a successful run with this key within the TTL.
+        :returns: Dict with keys ``bids``, ``expected_revenue``, ``diagnostics``,
+            ``most_probable_realization``, ``evaluation``.
+        :raises BusyError: 503 after retries exhausted.
+        :raises AuthenticationError: 401.
+        :raises InfeasibleScenarioError: 422 ``INFEASIBLE`` (every Variant
+            infeasible -- the site cannot dispatch).
+        :raises ValidationError: 422 for schema / ``TRANSLATION_ERROR``.
+        :raises OnPremError: For any other non-200 response.
+        :raises httpx.TimeoutException: On client-side timeout.
+        """
+        return self._post_with_retry("/v1/reservation-bids", request, idempotency_key)
+
+    def evaluate_reservation_bids(
+        self,
+        request: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Score a caller-supplied bid set via ``POST /v1/reservation-bids/evaluate``.
+
+        Runs ``site_calc.planning.reservation_bids.expected_plan_revenue`` --
+        the planner with the search removed. Useful for re-checking a planner
+        result against an alternative acceptance distribution, or for scoring
+        a hand-built bid set.
+
+        :param request: Payload matching the server's
+            ``ReservationBidEvaluateRequest`` (``sites``, ``timespan``, ``bids``,
+            ``acceptance``, optional ``expected_activation_revenue``). At most
+            one bid per interval; acceptance must cover every
+            ``(service, interval)`` referenced by ``bids``.
+        :param idempotency_key: ``Idempotency-Key`` header passthrough.
+        :returns: ``{"expected_revenue": float}``.
+        :raises InfeasibleScenarioError: 422 ``INFEASIBLE`` (site cannot honor
+            the supplied bid set).
+        :raises ValidationError: 422 ``TRANSLATION_ERROR`` (duplicate-interval
+            bid, missing acceptance entry, invalid ``interval_start``, etc.).
+        :raises BusyError, AuthenticationError, OnPremError: see
+            :meth:`build_reservation_bids`.
+        """
+        return self._post_with_retry("/v1/reservation-bids/evaluate", request, idempotency_key)
+
+    def most_probable_realization(
+        self,
+        request: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Single most-likely realization of a reservation-bid plan via
+        ``POST /v1/reservation-bids/most-probable-realization``.
+
+        For each bid, classifies it as cleared iff the acceptance distribution
+        gives it at least 50% probability at its ``capacity_price``; the
+        cleared subset pins the device, the rest is free. The day-ahead
+        objective under that effective dispatch is the realized baseline.
+
+        :param request: Payload matching the server's ``ReservationBidMPRRequest``
+            (``sites``, ``timespan``, ``bids``, ``acceptance``).
+        :param idempotency_key: ``Idempotency-Key`` header passthrough.
+        :returns: Dict with keys ``contracts`` (the bids that clear),
+            ``baseline_da``, ``realized_revenue``, ``joint_probability``.
+        :raises InfeasibleScenarioError: 422 ``INFEASIBLE`` (the cleared subset
+            cannot be honored by the site).
+        :raises ValidationError, BusyError, AuthenticationError, OnPremError:
+            see :meth:`build_reservation_bids`.
+        """
+        return self._post_with_retry("/v1/reservation-bids/most-probable-realization", request, idempotency_key)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

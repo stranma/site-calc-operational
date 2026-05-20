@@ -395,6 +395,161 @@ def cancel_active() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Reservation-bid tools
+# ---------------------------------------------------------------------------
+
+
+def _site_and_timespan(scenario_id: str) -> dict[str, Any]:
+    """Build the device-planning payload, then strip everything except the
+    ``sites`` and ``timespan`` fields the reservation-bid endpoints need.
+
+    Goes through ``_store.build_request`` so profile resolution, validation,
+    and device materialization all run the same way they would for ``solve``.
+    """
+    full = _store.build_request(scenario_id)
+    return {"sites": full["sites"], "timespan": full["timespan"]}
+
+
+def build_reservation_bids(
+    scenario_id: str,
+    services: list[str],
+    acceptance: list[dict[str, Any]],
+    expected_activation_revenue: list[dict[str, Any]] | None = None,
+    assume_maximal: bool = False,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Build a day-ahead reservation-bid plan against the on-prem server.
+
+    Runs ``POST /v1/reservation-bids``: the server enumerates per-interval bid
+    Modes, values each via a day-ahead LP, optimises bid prices, and returns
+    the expected-value-maximising plan. The response also bundles the planner's
+    own ``most_probable_realization`` and a re-evaluated ``expected_revenue``
+    (cross-check) so the LLM gets plan + realisation + revenue in one call.
+
+    The site's CHP (or other ANS-capable device) must declare its abilities
+    via ``properties.ans_abilities`` on ``add_device``, e.g.::
+
+        properties = {
+            ...,
+            "ans_abilities": [
+                {"service": "afrr_plus", "min_device_power_rate": 0.0, "max_device_power_rate": 1.0},
+                {"service": "afrr_minus", "min_device_power_rate": 0.0, "max_device_power_rate": 1.0},
+            ],
+        }
+
+    :param scenario_id: Scenario carrying the site + 24h-midnight-aligned timespan.
+    :param services: ANS service codes to bid into, e.g. ``["afrr_plus", "afrr_minus"]``.
+    :param acceptance: Per-(service, 4h-block) acceptance distribution input.
+        Each entry: ``{"service": "afrr_plus", "interval_start": "2026-05-13T00:00:00+02:00",
+        "distribution": {"type": "lognormal", "mu": 1.5, "sigma": 0.6}}``. The
+        distribution ``type`` is one of ``lognormal`` / ``lognormal_from_quantiles``
+        / ``empirical_percentiles`` -- see the server SPEC section 3.9.
+    :param expected_activation_revenue: Per-(service, block) expected EUR/MW/h.
+        Optional; defaults to empty.
+    :param assume_maximal: If ``True``, prune Pass 2 to maximal-feasible
+        Variants only. Safe when the acceptance distribution has enough upper
+        tail; verifiable per-run via ``diagnostics.winner_is_maximal``.
+    :param idempotency_key: If provided, the server replays a cached response
+        for the same key within the TTL.
+    :returns: Dict with ``bids``, ``expected_revenue``, ``diagnostics``,
+        ``most_probable_realization``, ``evaluation``.
+    :raises KeyError: Unknown ``scenario_id``.
+    :raises ValueError: Scenario fails validation.
+    :raises InfeasibleScenarioError: Every Variant the planner enumerated is
+        infeasible. The server's debug LP is saved to disk and
+        ``details.debug_lp_path`` is set so the user can inspect it.
+    :raises OnPremError: Any other non-200 response.
+    """
+    payload = _site_and_timespan(scenario_id)
+    payload["services"] = list(services)
+    payload["acceptance"] = list(acceptance)
+    payload["expected_activation_revenue"] = list(expected_activation_revenue or [])
+    payload["assume_maximal"] = bool(assume_maximal)
+
+    client = _get_client()
+    try:
+        return client.build_reservation_bids(payload, idempotency_key=idempotency_key)
+    except (InfeasibleScenarioError, UnboundedScenarioError) as exc:
+        _materialise_debug_lp(exc, scenario_id)
+        raise
+
+
+def evaluate_reservation_bids(
+    scenario_id: str,
+    bids: list[dict[str, Any]],
+    acceptance: list[dict[str, Any]],
+    expected_activation_revenue: list[dict[str, Any]] | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Score a caller-supplied bid set against site, timespan, and acceptance.
+
+    Runs ``POST /v1/reservation-bids/evaluate`` --
+    ``expected_plan_revenue`` with no search. Useful to re-check a plan
+    against an alternative acceptance distribution, or to score a hand-built
+    bid set.
+
+    :param scenario_id: Scenario carrying the site + 24h timespan.
+    :param bids: At most one bid per interval. Each entry:
+        ``{"service": "afrr_plus", "interval_start": "...", "volume_mw": 1.0,
+        "capacity_price": 25.4}``.
+    :param acceptance: Per-(service, block) acceptance distribution; must cover
+        every ``(service, interval)`` referenced by ``bids``. Same shape as
+        :func:`build_reservation_bids`.
+    :param expected_activation_revenue: Optional; defaults to empty.
+    :param idempotency_key: Passthrough header.
+    :returns: ``{"expected_revenue": float}``.
+    :raises KeyError, ValueError, InfeasibleScenarioError, OnPremError: see
+        :func:`build_reservation_bids`.
+    """
+    payload = _site_and_timespan(scenario_id)
+    payload["bids"] = list(bids)
+    payload["acceptance"] = list(acceptance)
+    payload["expected_activation_revenue"] = list(expected_activation_revenue or [])
+
+    client = _get_client()
+    try:
+        return client.evaluate_reservation_bids(payload, idempotency_key=idempotency_key)
+    except (InfeasibleScenarioError, UnboundedScenarioError) as exc:
+        _materialise_debug_lp(exc, scenario_id)
+        raise
+
+
+def most_probable_realization(
+    scenario_id: str,
+    bids: list[dict[str, Any]],
+    acceptance: list[dict[str, Any]],
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Return the modal-cleared outcome of a reservation-bid plan.
+
+    Runs ``POST /v1/reservation-bids/most-probable-realization``. For each
+    bid, classifies it as cleared iff the acceptance distribution gives it at
+    least 50% probability at its ``capacity_price``; the cleared subset pins
+    the device, the rest is free.
+
+    :param scenario_id: Scenario carrying the site + 24h timespan.
+    :param bids: The plan to realise (same shape as in :func:`evaluate_reservation_bids`).
+    :param acceptance: Per-(service, block) acceptance distribution; must
+        cover every ``(service, interval)`` referenced by ``bids``.
+    :param idempotency_key: Passthrough header.
+    :returns: Dict with ``contracts`` (the bids that clear), ``baseline_da``,
+        ``realized_revenue``, ``joint_probability``.
+    :raises KeyError, ValueError, InfeasibleScenarioError, OnPremError: see
+        :func:`build_reservation_bids`.
+    """
+    payload = _site_and_timespan(scenario_id)
+    payload["bids"] = list(bids)
+    payload["acceptance"] = list(acceptance)
+
+    client = _get_client()
+    try:
+        return client.most_probable_realization(payload, idempotency_key=idempotency_key)
+    except (InfeasibleScenarioError, UnboundedScenarioError) as exc:
+        _materialise_debug_lp(exc, scenario_id)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Schema helper
 # ---------------------------------------------------------------------------
 
@@ -529,6 +684,9 @@ mcp.tool()(cancel_active)
 mcp.tool()(get_device_schema)
 mcp.tool()(save_data_file)
 mcp.tool()(fetch_url)
+mcp.tool()(build_reservation_bids)
+mcp.tool()(evaluate_reservation_bids)
+mcp.tool()(most_probable_realization)
 
 
 def main() -> None:

@@ -17,7 +17,7 @@ from httpx import Response
 from site_calc_operational.api.onprem_client import OnPremClient
 from site_calc_operational.mcp import server as srv
 
-EXPECTED_TOOL_COUNT = 17
+EXPECTED_TOOL_COUNT = 20
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +67,9 @@ async def test_tool_names_are_present() -> None:
         "get_device_schema",
         "save_data_file",
         "fetch_url",
+        "build_reservation_bids",
+        "evaluate_reservation_bids",
+        "most_probable_realization",
     }
     assert names == expected, f"Tool name drift: missing={expected - names}, extra={names - expected}"
 

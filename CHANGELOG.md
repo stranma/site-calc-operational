@@ -3,6 +3,38 @@
 All notable changes to `site-calc-operational` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-05-20
+
+### Added
+
+- **`OnPremClient.build_reservation_bids(request)`** -- wraps the new
+  `POST /v1/reservation-bids` endpoint. Server returns the day-ahead
+  reservation-bid plan plus its own `most_probable_realization` and a
+  re-evaluated `expected_revenue` in one round-trip.
+- **`OnPremClient.evaluate_reservation_bids(request)`** -- wraps
+  `POST /v1/reservation-bids/evaluate`. Scores a caller-supplied bid set via
+  `expected_plan_revenue` (planner with the search removed).
+- **`OnPremClient.most_probable_realization(request)`** -- wraps
+  `POST /v1/reservation-bids/most-probable-realization`. Returns the modal
+  contracts, day-ahead baseline, realized revenue, and joint probability.
+- **MCP tools**: `build_reservation_bids`, `evaluate_reservation_bids`,
+  `most_probable_realization`. Each takes a `scenario_id` (for site +
+  timespan) plus reservation-bid-specific kwargs (`services`, `acceptance`,
+  `bids`, etc.). MCP tool count: 17 -> 20.
+- The on-prem server returns the optimizer's debug LP inline on `INFEASIBLE`;
+  the MCP tool decodes the base64 blob, writes it to
+  `SITE_CALC_OPERATIONAL_DATA_DIR`, and rewrites
+  `exc.details.debug_lp_path` so the LLM can point a human at the file. The
+  same handler that ships for `solve` now runs on the reservation-bid path.
+
+### Notes
+
+- All three new methods accept `idempotency_key` and respect the same
+  `BackoffPolicy` 503 retry as `device_planning`.
+- 422 `INFEASIBLE` / `TRANSLATION_ERROR`, 503 `BUSY`, 401 dispatch all fall
+  out of the existing `from_response` mapping -- no new exception types
+  needed.
+
 ## [0.1.0] - 2026-05-07
 
 First public release. The package versions independently from the rest of the
