@@ -17,6 +17,27 @@ Other endpoints (``device_planning``, ``runs``, ``optimal_bidding``) are not
 modelled yet -- scope of v0.2.1 is reservation-bid only.
 """
 
+from site_calc_operational.models.devices import (
+    ANSAbility,
+    BatteryDevice,
+    BatteryProperties,
+    CHPDevice,
+    CHPProperties,
+    ElectricityExportDevice,
+    ElectricityExportProperties,
+    ElectricityImportDevice,
+    ElectricityImportProperties,
+    GasImportDevice,
+    GasImportProperties,
+    HeatAccumulatorDevice,
+    HeatAccumulatorProperties,
+    HeatDemandDevice,
+    HeatDemandProperties,
+    HeatExportDevice,
+    HeatExportProperties,
+    Profile,
+    TypedDevice,
+)
 from site_calc_operational.models.reservation_bids import (
     AcceptanceDistributionInput,
     ActivationRevenueEntry,
@@ -40,23 +61,46 @@ from site_calc_operational.models.reservation_bids import (
 )
 
 __all__ = [
+    # Reservation-bid request/response models
     "AcceptanceDistributionInput",
     "ActivationRevenueEntry",
     "BidAcceptanceEntry",
-    "DeviceRequest",
     "EmpiricalPercentilesParams",
     "EvaluationResult",
     "LogNormalFromQuantilesParams",
     "LogNormalParams",
     "MostProbableRealizationResult",
-    "OptimizationConfig",
     "ReservationBidEvaluateRequest",
     "ReservationBidIn",
     "ReservationBidMPRRequest",
     "ReservationBidOut",
     "ReservationBidPlanRequest",
     "ReservationBidPlanResult",
+    # Shared request types
+    "DeviceRequest",
+    "OptimizationConfig",
     "ServiceCode",
     "SiteRequest",
     "TimeSpanRequest",
+    # Typed device properties (per-type)
+    "ANSAbility",
+    "Profile",
+    "BatteryProperties",
+    "CHPProperties",
+    "ElectricityExportProperties",
+    "ElectricityImportProperties",
+    "GasImportProperties",
+    "HeatAccumulatorProperties",
+    "HeatDemandProperties",
+    "HeatExportProperties",
+    # Typed devices (tagged-union members)
+    "BatteryDevice",
+    "CHPDevice",
+    "ElectricityExportDevice",
+    "ElectricityImportDevice",
+    "GasImportDevice",
+    "HeatAccumulatorDevice",
+    "HeatDemandDevice",
+    "HeatExportDevice",
+    "TypedDevice",
 ]
