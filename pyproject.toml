@@ -1,6 +1,6 @@
 [project]
 name = "site-calc-operational"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python client for Site-Calc operational optimization (day-ahead bidding, ANS)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -19,7 +19,7 @@ from site_calc_operational.api.onprem_client import (
     OnPremClient,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "BackoffPolicy",

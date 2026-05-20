@@ -3,6 +3,71 @@
 All notable changes to `site-calc-operational` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] - 2026-05-20
+
+### Added
+
+- **Typed Pydantic models for the reservation-bid endpoints** under
+  `site_calc_operational.models`. Hand-mirrored from the on-prem server's
+  schemas with field-name parity pinned by `test_reservation_bid_models.py`.
+  Public surface:
+  - `ReservationBidPlanRequest`, `ReservationBidEvaluateRequest`,
+    `ReservationBidMPRRequest`
+  - `ReservationBidPlanResult`, `EvaluationResult`,
+    `MostProbableRealizationResult`, `ReservationBidOut`
+  - `AcceptanceDistributionInput` (discriminated union: `LogNormalParams`,
+    `LogNormalFromQuantilesParams`, `EmpiricalPercentilesParams`)
+  - `BidAcceptanceEntry`, `ReservationBidIn`, `ActivationRevenueEntry`
+  - Shared structural types: `TimeSpanRequest`, `SiteRequest`,
+    `DeviceRequest`, `OptimizationConfig`, `ServiceCode`
+- **Typed device-properties + typed-device wrappers** mirroring the
+  domain devices in `site_calc.domain.devices.*`. Closes the discovery gap
+  in `DeviceRequest.properties` (`dict[str, Any]`): an IDE now shows the
+  per-type field set, and `extra='forbid'` catches misspellings at
+  construction time. Field-name parity with the on-prem server's
+  `translate_device` pinned by `test_device_property_models.py`. Public
+  surface:
+  - Properties: `BatteryProperties`, `HeatAccumulatorProperties`,
+    `CHPProperties`, `HeatDemandProperties`, `ElectricityImportProperties`,
+    `ElectricityExportProperties`, `GasImportProperties`,
+    `HeatExportProperties`
+  - Typed devices (one per type): `BatteryDevice`, `HeatAccumulatorDevice`,
+    `CHPDevice`, `HeatDemandDevice`, `ElectricityImportDevice`,
+    `ElectricityExportDevice`, `GasImportDevice`, `HeatExportDevice`
+  - `TypedDevice` -- tagged union of all of the above, discriminated by
+    `type`; lets a caller `TypeAdapter(TypedDevice).validate_python({...})`
+    and have the right subclass dispatched
+  - `ANSAbility` -- Pydantic mirror of `site_calc.domain.ans.ANSAbility`
+    with the same rate-window validation
+- The `OnPremClient` methods still accept and return `dict[str, Any]` --
+  this release is **additive**, not a breaking change. Typical usage:
+  ```python
+  chp_props = CHPProperties(
+      gas_input=2.5, el_output=1.0, heat_output=1.0, is_binary=True,
+      ans_abilities=[ANSAbility(service="afrr_plus",
+                                min_device_power_rate=0.0,
+                                max_device_power_rate=1.0)],
+  )
+  req = ReservationBidPlanRequest(
+      sites=[SiteRequest(site_id="...", devices=[
+          DeviceRequest(name="CHP-bin", type="chp",
+                        properties=chp_props.model_dump(mode="json")),
+      ])],
+      timespan=..., services=[...], acceptance=[...],
+  )
+  raw = client.build_reservation_bids(req.model_dump(mode="json"))
+  result = ReservationBidPlanResult.model_validate(raw)
+  ```
+
+### Notes
+
+- `device_planning`, `runs`, `health`, and `optimal_bidding` response shapes
+  still flow as `dict[str, Any]`. `HealthInfo` (a dataclass in
+  `api/onprem_client.py`) remains the only typed view for `/v1/health`.
+- `photovoltaic` and `electricity_demand` are not modelled because the
+  on-prem server rejects both -- a `TypedDevice` with `type="photovoltaic"`
+  fails at parse time rather than at the server.
+
 ## [0.2.0] - 2026-05-20
 
 ### Added
