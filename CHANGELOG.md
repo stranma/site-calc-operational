@@ -3,7 +3,43 @@
 All notable changes to `site-calc-operational` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.1] - 2026-05-20
+## [0.3.0] - 2026-05-21
+
+Builds on the unreleased 0.2.1 typed-models work with API polish from a
+dogfood test (an SDK-only integrator wrote a working
+`build_reservation_bids` call against a live deployment and reported back
+on what was unclear). 0.2.1 was never published; its features are folded
+in here.
+
+### Added
+
+- **`SiteRequest.devices` now accepts the typed device wrappers directly.**
+  v0.2.1 introduced `CHPDevice`, `BatteryDevice`, ..., but
+  `SiteRequest.devices` was typed `list[DeviceRequest]`, so the typed
+  wrappers couldn't actually be used at the site level. Now typed as
+  `list[Union[TypedDevice, DeviceRequest]]` with discriminator dispatch
+  on `type`: a `chp` dict parses straight to `CHPDevice`, an unknown
+  `type` falls through to `DeviceRequest` (forward-compatible with
+  future server-side device types).
+- **`LogNormalParams.from_mean_cv(mean, cv)`** classmethod -- construct
+  the log-normal from EUR/MW/h mean + coefficient of variation, avoiding
+  the off-by-`sigma**2/2` mistake of `mu = ln(mean)`. The math is
+  derivable from the docstring but every caller would write the same
+  helper otherwise.
+- **`four_hour_block_starts(timespan)`** helper -- returns the six block
+  starts (00/04/08/12/16/20 in the timespan's tz) the planner needs.
+- **`build_uniform_acceptance(timespan, services, distribution)`** -- one
+  shot for "this distribution for every `(service, block)`", which the
+  planner requires the full Cartesian product of. Eliminates a common
+  source of `TRANSLATION_ERROR` on first use.
+- **`build_zero_activation_revenue(timespan, services)`** -- the
+  conservative "no activation upside" default.
+- **Typed Pydantic models for the reservation-bid endpoints** under
+  `site_calc_operational.models`. Hand-mirrored from the on-prem server's
+  schemas with field-name parity pinned by `test_reservation_bid_models.py`.
+  Public surface:
+  - `ReservationBidPlanRequest`, `ReservationBidEvaluateRequest`,
+    `ReservationBidMPRRequest`
 
 ### Added
 
@@ -58,6 +94,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   raw = client.build_reservation_bids(req.model_dump(mode="json"))
   result = ReservationBidPlanResult.model_validate(raw)
   ```
+
+### Changed
+
+- **README rewritten around the on-prem reservation-bid flow.** The Quick
+  Start now showcases the typed-model + `OnPremClient` workflow that
+  v0.3.0 documents end-to-end. The stale SaaS `OperationalClient`
+  example (which referenced symbols that don't exist on this branch:
+  `wait_for_completion`, `MarketForecasts`, etc.) is replaced by a brief
+  legacy section pointing to operator runbooks.
+- **MCP tool count documented as 20** (up from 17 in v0.1.0): adds
+  `build_reservation_bids`, `evaluate_reservation_bids`,
+  `most_probable_realization`.
+- **Docstring fills** on the v0.2.1 surface, driven by gaps from the
+  dogfood test:
+  - `LogNormalParams`: declares the unit (EUR/MW/h), documents the
+    mean/median/CV transforms.
+  - `ReservationBidPlanRequest`: documents the acceptance
+    Cartesian-coverage rule (services × 6 blocks) and the
+    `assume_maximal` correctness tradeoff with `winner_is_maximal`.
+  - `ActivationRevenueEntry`: clarifies "additional on top of capacity
+    payment" semantics.
+  - `OnPremClient.*`: 24-hour idempotency TTL stated explicitly.
 
 ### Notes
 
