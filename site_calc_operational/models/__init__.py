@@ -42,6 +42,7 @@ from site_calc_operational.models.devices import (
     TypedDevice,
 )
 from site_calc_operational.models.helpers import (
+    build_per_block_acceptance,
     build_uniform_acceptance,
     build_zero_activation_revenue,
     four_hour_block_starts,
@@ -112,6 +113,7 @@ __all__ = [
     "HeatExportDevice",
     "TypedDevice",
     # Convenience helpers
+    "build_per_block_acceptance",
     "build_uniform_acceptance",
     "build_zero_activation_revenue",
     "four_hour_block_starts",

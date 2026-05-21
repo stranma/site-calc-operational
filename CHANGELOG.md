@@ -32,6 +32,10 @@ in here.
   shot for "this distribution for every `(service, block)`", which the
   planner requires the full Cartesian product of. Eliminates a common
   source of `TRANSLATION_ERROR` on first use.
+- **`build_per_block_acceptance(timespan, distributions_by_service)`** --
+  the production-grade variant: pass one distribution per `(service,
+  block)` via a dict-of-lists. Rejects wrong-length lists locally so a
+  forecast-copying off-by-one mistake doesn't reach the wire.
 - **`build_zero_activation_revenue(timespan, services)`** -- the
   conservative "no activation upside" default.
 - **Typed Pydantic models for the reservation-bid endpoints** under
@@ -116,6 +120,9 @@ in here.
   - `ActivationRevenueEntry`: clarifies "additional on top of capacity
     payment" semantics.
   - `OnPremClient.*`: 24-hour idempotency TTL stated explicitly.
+  - `ANSAbility`: documents that the rates are fractions of the device's
+    **electrical** power range (not gas, not heat), with per-device-type
+    examples for CHP and Battery.
 
 ### Notes
 

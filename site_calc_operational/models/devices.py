@@ -50,14 +50,30 @@ from site_calc_operational.models._base import ServiceCode
 class ANSAbility(BaseModel):
     """Device's prequalified ability to provide a specific ancillary service.
 
-    Mirrors ``site_calc.domain.ans.ANSAbility``. Rates are fractions of
-    device nominal capacity:
+    Mirrors ``site_calc.domain.ans.ANSAbility``. The rates declare a window
+    along the device's **electrical power range** (the device's electricity
+    port, NOT gas, heat, or thermal capacity):
 
-    * ``max_device_power_rate`` in (0, 1] -- upper edge of the ability's
-      power window.
-    * ``min_device_power_rate`` in [-1, 1) -- lower edge. May be negative
-      for direction-symmetric devices (battery) to express a -P_nom..+P_nom
-      swing (effective service capacity up to 2 * P_nom).
+    * For a **CHP** the electrical range is ``[0, el_output]``. Rate 0.0
+      maps to off (0 MW); rate 1.0 maps to full electrical output
+      (``el_output`` MW). For a 1 MW binary CHP, an aFRR+ ability with
+      ``min_device_power_rate=0.0, max_device_power_rate=1.0`` means the
+      unit can swing across its entire 0..1 MW electrical range to
+      provide up-regulation (be off, then ramp on).
+    * For a **Battery** the electrical range is ``[-max_power, +max_power]``
+      (charging is negative, discharging positive). Rate ``-1.0`` maps to
+      full charging at ``-max_power`` MW; rate ``+1.0`` maps to full
+      discharging at ``+max_power`` MW. A battery declaring a
+      ``-1.0..+1.0`` ability can serve up to ``2 * max_power`` MW of
+      direction-symmetric capacity (full charge swing to full discharge).
+
+    Rate bounds (mirror the domain validator):
+
+    * ``max_device_power_rate`` in ``(0, 1]`` -- upper edge of the
+      ability's power window.
+    * ``min_device_power_rate`` in ``[-1, 1)`` -- lower edge. Non-negative
+      for unidirectional devices (CHP, PV); may be negative for
+      direction-symmetric devices (battery).
 
     Construction-time validation matches the domain class; the on-prem
     server re-validates server-side.

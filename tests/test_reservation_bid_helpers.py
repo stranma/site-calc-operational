@@ -11,6 +11,7 @@ from site_calc_operational.models import (
     BidAcceptanceEntry,
     LogNormalParams,
     TimeSpanRequest,
+    build_per_block_acceptance,
     build_uniform_acceptance,
     build_zero_activation_revenue,
     four_hour_block_starts,
@@ -102,6 +103,62 @@ def test_build_uniform_acceptance_returns_typed_entries() -> None:
     dist = LogNormalParams(mu=1.5, sigma=0.5)
     entries = build_uniform_acceptance(ts, ["afrr_plus"], dist)
     assert all(isinstance(e, BidAcceptanceEntry) for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# build_per_block_acceptance
+# ---------------------------------------------------------------------------
+
+
+def test_build_per_block_acceptance_full_cartesian() -> None:
+    """Same Cartesian-product invariant as build_uniform_acceptance, but each
+    (service, block) gets its own distribution."""
+    ts = _day_timespan()
+    plus_dists = [LogNormalParams.from_mean_cv(mean=m, cv=0.6) for m in [6.0, 5.0, 8.0, 10.0, 14.0, 11.0]]
+    minus_dists = [LogNormalParams.from_mean_cv(mean=m, cv=0.6) for m in [4.5, 3.5, 6.0, 7.5, 10.0, 8.0]]
+    entries = build_per_block_acceptance(
+        ts,
+        distributions_by_service={"afrr_plus": plus_dists, "afrr_minus": minus_dists},
+    )
+    assert len(entries) == 12
+    plus_entries = [e for e in entries if e.service == "afrr_plus"]
+    assert len(plus_entries) == 6
+    # Verify each block got its assigned distribution (mu strictly increases
+    # then drops, matching the mean profile).
+    mus = [e.distribution.mu for e in plus_entries]
+    assert mus == [plus_dists[i].mu for i in range(6)]
+
+
+def test_build_per_block_acceptance_rejects_wrong_length() -> None:
+    """Failure mode: the helper silently truncates or pads. A length
+    mismatch is the most common per-block mistake (off-by-one when copying
+    from a 7-element forecast); catch it locally."""
+    ts = _day_timespan()
+    five_dists = [LogNormalParams(mu=1.0, sigma=0.5)] * 5
+    with pytest.raises(ValueError, match="6"):
+        build_per_block_acceptance(ts, {"afrr_plus": five_dists})
+
+
+def test_build_per_block_acceptance_subset_of_services() -> None:
+    """Caller can pass only the services they care about; helper doesn't
+    require all four ANS services."""
+    ts = _day_timespan()
+    dists = [LogNormalParams(mu=1.5, sigma=0.6)] * 6
+    entries = build_per_block_acceptance(ts, {"afrr_plus": dists})
+    assert len(entries) == 6
+    assert all(e.service == "afrr_plus" for e in entries)
+
+
+def test_build_per_block_acceptance_propagates_typed_entries() -> None:
+    """Each entry must be a typed BidAcceptanceEntry whose distribution is
+    the one the caller supplied (identity check, not just equality)."""
+    ts = _day_timespan()
+    dists = [LogNormalParams(mu=float(i), sigma=0.5) for i in range(6)]
+    entries = build_per_block_acceptance(ts, {"afrr_plus": dists})
+    assert all(isinstance(e, BidAcceptanceEntry) for e in entries)
+    for entry, expected in zip(entries, dists, strict=True):
+        assert isinstance(entry.distribution, LogNormalParams)
+        assert entry.distribution.mu == expected.mu
 
 
 # ---------------------------------------------------------------------------
