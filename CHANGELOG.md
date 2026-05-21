@@ -3,6 +3,20 @@
 All notable changes to `site-calc-operational` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `scripts/prod_test_reservation_bids.py`: SDK-level acceptance test for
+  the on-prem reservation-bid endpoints. Every server call goes through
+  `OnPremClient` and every payload is built from the typed Pydantic
+  models in `site_calc_operational.models`, so the script also doubles
+  as a worked example of the supported public surface. Credentials come
+  from `ONPREM_API_KEY` (required) and `ONPREM_BASE_URL`, or from a
+  KEY=VALUE file pointed to by `--env-file` / `ONPREM_ENV_FILE`. Covers
+  health, planner + idempotency replay, evaluate cross-check, MPR
+  cross-check, 422 `TRANSLATION_ERROR`, and 401.
+
 ## [0.3.0] - 2026-05-21
 
 Builds on the unreleased 0.2.1 typed-models work with API polish from a
