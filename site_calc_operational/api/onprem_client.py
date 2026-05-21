@@ -318,7 +318,8 @@ class OnPremClient:
             (``sites``, ``timespan``, ``services``, ``acceptance``, optional
             ``expected_activation_revenue`` and ``assume_maximal``).
         :param idempotency_key: ``Idempotency-Key`` header passthrough. The
-            server replays a successful run with this key within the TTL.
+            server replays a successful run with this key within the TTL
+            (24 hours by default; see ``Settings.idempotency_ttl_hours``).
         :returns: Dict with keys ``bids``, ``expected_revenue``, ``diagnostics``,
             ``most_probable_realization``, ``evaluation``.
         :raises BusyError: 503 after retries exhausted.
