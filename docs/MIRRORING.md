@@ -58,6 +58,10 @@ Two upstream repos, three sources within them:
 - **`server-onprem/src/site_calc_onprem/translation.py::translate_device`** —
   per-device-type translator that reads `properties` and constructs the
   matching domain object. Authority on the wire field set per device type.
+  Note: temporal-constraint properties (`must_run`, `must_be_idle`,
+  `min_continuous_run_hours` on CHP) live as plain entries in
+  `properties`, *not* under the (currently-unused) top-level `schedule`
+  field on `DeviceRequest`.
 - **`site_calc/src/site_calc/domain/devices/*.py` + `domain/ans/base.py`** —
   the underlying domain classes. Authority on the field types and the
   validation ranges (positive scalars, [0,1] fractions, rate windows).

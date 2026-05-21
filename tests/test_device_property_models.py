@@ -195,7 +195,17 @@ def test_chp_properties_dump_matches_device_request_shape() -> None:
     assert wire["properties"]["gas_input"] == 2.5
     assert wire["properties"]["ans_abilities"][0]["service"] == "afrr_plus"
     # Field names match what server's translate_device('chp') consumes.
-    expected_props_keys = {"gas_input", "el_output", "heat_output", "is_binary", "max_starts_per_day", "ans_abilities"}
+    expected_props_keys = {
+        "gas_input",
+        "el_output",
+        "heat_output",
+        "is_binary",
+        "max_starts_per_day",
+        "ans_abilities",
+        "must_run",
+        "must_be_idle",
+        "min_continuous_run_hours",
+    }
     assert set(wire["properties"].keys()) == expected_props_keys
 
 
@@ -227,7 +237,17 @@ def test_typed_device_dumps_to_same_shape_as_device_request() -> None:
 _SERVER_TRANSLATE_DEVICE_PROPS: dict[str, set[str]] = {
     "battery": {"capacity", "max_power", "efficiency", "initial_soc", "soc_anchor_interval_hours", "soc_anchor_target"},
     "heat_accumulator": {"capacity", "max_power", "efficiency", "initial_soc", "loss_rate"},
-    "chp": {"gas_input", "el_output", "heat_output", "is_binary", "max_starts_per_day", "ans_abilities"},
+    "chp": {
+        "gas_input",
+        "el_output",
+        "heat_output",
+        "is_binary",
+        "max_starts_per_day",
+        "ans_abilities",
+        "must_run",
+        "must_be_idle",
+        "min_continuous_run_hours",
+    },
     "heat_demand": {"max_demand_profile", "min_demand_profile", "demand_profile"},
     "electricity_import": {"price", "max_import"},
     "electricity_export": {"price", "max_export"},
@@ -341,6 +361,40 @@ def test_site_request_parse_dispatches_known_types_to_typed_devices() -> None:
     )
     assert isinstance(site.devices[0], CHPDevice)
     assert isinstance(site.devices[1], DeviceRequest)
+
+
+def test_chp_temporal_props_default_to_none() -> None:
+    """The three temporal-constraint fields default to ``None`` so existing
+    callers see no behaviour change."""
+    chp = CHPProperties(gas_input=2.5, el_output=1.0, heat_output=1.0)
+    assert chp.must_run is None
+    assert chp.must_be_idle is None
+    assert chp.min_continuous_run_hours is None
+
+
+def test_chp_temporal_props_round_trip_through_device_request() -> None:
+    """Typed temporal-constraint values must survive dump -> DeviceRequest
+    -> dump as the exact list/scalar shape the on-prem translator reads."""
+    chp = CHPProperties(
+        gas_input=2.5,
+        el_output=1.0,
+        heat_output=1.0,
+        must_run=[1, 0, 1, 0] + [0] * 20,
+        must_be_idle=[0, 0, 0, 1] + [0] * 20,
+        min_continuous_run_hours=4.0,
+    )
+    device = DeviceRequest(name="CHP", type="chp", properties=chp.model_dump(mode="json"))
+    wire = device.model_dump(mode="json")
+    assert wire["properties"]["must_run"] == [1, 0, 1, 0] + [0] * 20
+    assert wire["properties"]["must_be_idle"] == [0, 0, 0, 1] + [0] * 20
+    assert wire["properties"]["min_continuous_run_hours"] == 4.0
+
+
+def test_chp_min_continuous_run_hours_must_be_non_negative() -> None:
+    """Match the server-side rejection at construction time so the client
+    fails locally rather than after a round-trip."""
+    with pytest.raises(ValidationError):
+        CHPProperties(gas_input=2.5, el_output=1.0, heat_output=1.0, min_continuous_run_hours=-1.0)
 
 
 def test_typed_device_type_literal_matches_class() -> None:

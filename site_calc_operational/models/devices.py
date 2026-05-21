@@ -168,6 +168,34 @@ class CHPProperties(BaseModel):
     ans_abilities: list[ANSAbility] = Field(
         default_factory=list, description="Prequalified ANS abilities (used by the reservation-bid planner)."
     )
+    must_run: list[int] | None = Field(
+        default=None,
+        description=(
+            "Per-interval must-run flag (each value 0 or 1). Length must "
+            "match the timespan intervals. 1 forces the unit on at that "
+            "interval (at least 30%% capacity for continuous CHPs, fully on "
+            "for binary CHPs). Mutually exclusive with ``must_be_idle`` at "
+            "any single index -- the server returns 422 on overlap."
+        ),
+    )
+    must_be_idle: list[int] | None = Field(
+        default=None,
+        description=(
+            "Per-interval must-be-idle flag (each value 0 or 1). Length must "
+            "match the timespan intervals. 1 forces the unit off at that "
+            "interval."
+        ),
+    )
+    min_continuous_run_hours: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Minimum uninterrupted run length once the unit turns on, in "
+            "hours. ``None`` or a value <= one interval is a no-op. A "
+            "positive value forces every ON block to span at least "
+            "``round(min_continuous_run_hours / dt)`` intervals."
+        ),
+    )
 
 
 class HeatDemandProperties(BaseModel):
