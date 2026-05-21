@@ -7,6 +7,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `CHPProperties` gains three temporal-constraint fields mirroring the
+  newly-shipped server-side properties (server-onprem v0.2.2):
+  - `must_run: list[int] | None` -- per-interval must-run flag (0/1).
+  - `must_be_idle: list[int] | None` -- per-interval must-be-idle flag
+    (0/1). Mutually exclusive with `must_run` at any single index; the
+    server returns 422 on overlap.
+  - `min_continuous_run_hours: float | None` (>= 0) -- minimum
+    uninterrupted run length once the unit turns on.
+  All three are additive optionals; existing callers see no change.
 - `scripts/prod_test_reservation_bids.py`: SDK-level acceptance test for
   the on-prem reservation-bid endpoints. Every server call goes through
   `OnPremClient` and every payload is built from the typed Pydantic
