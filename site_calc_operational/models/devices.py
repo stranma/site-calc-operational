@@ -40,7 +40,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from site_calc_operational.models.reservation_bids import ServiceCode
+from site_calc_operational.models._base import ServiceCode
 
 # ---------------------------------------------------------------------------
 # ANS ability -- shared building block for CHP and (future) Battery ans services

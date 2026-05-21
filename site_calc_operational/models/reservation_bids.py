@@ -32,9 +32,10 @@ so server-side renames break client-side tests at the next pull.
 
 Scope is intentionally narrow: only the reservation-bid family. Existing
 ``OnPremClient`` methods keep their ``dict[str, Any]`` signatures so the
-package is back-compatible (this is a 0.2.x patch, not a 0.3.0 minor).
-``device_planning``, ``runs``, and ``optimal_bidding`` shapes are not modelled
-in this release.
+package is back-compatible. ``device_planning``, ``runs``, and
+``optimal_bidding`` response shapes are not modelled here; their request
+side is partly covered by the shared types (``TimeSpanRequest``,
+``SiteRequest``, ``DeviceRequest``, ``OptimizationConfig``).
 """
 
 from __future__ import annotations
@@ -44,12 +45,11 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# ---------------------------------------------------------------------------
-# Service codes
-# ---------------------------------------------------------------------------
+from site_calc_operational.models._base import ServiceCode
+from site_calc_operational.models.devices import TypedDevice
 
-# Lowercase wire codes; mirror site_calc.domain.ans.AncillaryService.code.
-ServiceCode = Literal["afrr_plus", "afrr_minus", "mfrr_plus", "mfrr_minus"]
+# Re-export for back-compat (callers were importing ServiceCode from here).
+__all_service_code = ServiceCode
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +89,19 @@ class DeviceRequest(BaseModel):
 
 
 class SiteRequest(BaseModel):
-    """Site holding one or more devices."""
+    """Site holding one or more devices.
+
+    ``devices`` accepts both typed device wrappers (``CHPDevice``,
+    ``BatteryDevice``, ..., dispatched by their ``type`` literal) and the
+    generic ``DeviceRequest`` (any ``type`` string + ``properties`` dict).
+    The typed shapes give IDE autocomplete and Pydantic validation; the
+    generic shape stays available for device types not (yet) modelled and
+    for forward compatibility with server-side additions. Both serialize
+    to the same wire JSON so a list can mix them freely.
+    """
 
     site_id: str = Field(..., min_length=1, max_length=100)
-    devices: list[DeviceRequest] = Field(..., min_length=1)
+    devices: list[Union[TypedDevice, DeviceRequest]] = Field(..., min_length=1)
     constraints: dict[str, Any] | None = None
 
 
@@ -113,11 +122,53 @@ class OptimizationConfig(BaseModel):
 
 class LogNormalParams(BaseModel):
     """Direct ``(mu, sigma)`` parameters for a log-normal clearing-price
-    distribution. ``ln(price) ~ Normal(mu, sigma)``."""
+    distribution.
+
+    ``ln(price_in_EUR_per_MW_per_hour) ~ Normal(mu, sigma)``. All prices on
+    this wire (capacity prices, activation revenue, distribution parameters,
+    block-clearing prices) are in **EUR/MW/h**.
+
+    Common transforms:
+
+    * Mean of the distribution (EUR/MW/h): ``exp(mu + sigma**2 / 2)``
+    * Median (EUR/MW/h): ``exp(mu)``
+    * Coefficient of variation: ``sqrt(exp(sigma**2) - 1)``
+
+    Use :meth:`from_mean_cv` if you'd rather specify the mean directly
+    instead of the log-space ``mu``.
+    """
 
     type: Literal["lognormal"] = "lognormal"
-    mu: float = Field(..., description="Mean of ln(price).")
-    sigma: float = Field(..., gt=0, description="Std-dev of ln(price); must be > 0.")
+    mu: float = Field(..., description="Mean of ``ln(price)`` where price is in EUR/MW/h.")
+    sigma: float = Field(..., gt=0, description="Std-dev of ``ln(price)``; must be > 0. Higher = wider upper tail.")
+
+    @classmethod
+    def from_mean_cv(cls, mean: float, cv: float) -> "LogNormalParams":
+        """Construct from EUR/MW/h mean and coefficient of variation.
+
+        The reservation-bid planner thinks in EUR/MW/h, not in log-space
+        ``mu``. Most callers know what mean clearing price to expect for a
+        block and have a rough sense of its variability; this avoids the
+        off-by-``sigma**2 / 2`` mistake of setting ``mu = ln(mean)``.
+
+        :param mean: Expected clearing price in EUR/MW/h. Must be > 0.
+        :param cv: Coefficient of variation (std-dev / mean). Typical
+            day-ahead aFRR markets sit around ``cv ~= 0.5..0.8``.
+            Must be > 0.
+        :returns: A :class:`LogNormalParams` whose log-normal distribution
+            has the requested mean and CV.
+        :raises ValueError: If ``mean <= 0`` or ``cv <= 0``.
+        """
+        from math import log, sqrt
+
+        if mean <= 0:
+            raise ValueError(f"mean must be > 0, got {mean}")
+        if cv <= 0:
+            raise ValueError(f"cv must be > 0, got {cv}")
+        sigma2 = log(1.0 + cv * cv)
+        sigma = sqrt(sigma2)
+        mu = log(mean) - sigma2 / 2.0
+        return cls(mu=mu, sigma=sigma)
 
 
 class LogNormalFromQuantilesParams(BaseModel):
@@ -175,11 +226,22 @@ class ReservationBidIn(BaseModel):
 
 
 class ActivationRevenueEntry(BaseModel):
-    """Expected activation revenue (EUR/MW/h) for a ``(service, block)``."""
+    """Expected activation revenue (EUR/MW/h) for a ``(service, block)``.
+
+    This is the *additional* revenue the device expects to earn from being
+    activated (called on to deliver the reserved capacity), on top of the
+    capacity payment. The planner weights it by the per-bid clearing
+    probability to compute total expected revenue under each Variant.
+
+    Conservative default: ``0.0`` per ``(service, block)`` -- "we only get
+    paid for being prequalified, no activation upside expected". Pass
+    non-zero values when the operator has a forecast of activation volume
+    *and* the price for activated MW.
+    """
 
     service: ServiceCode
     interval_start: datetime
-    eur_per_mw_h: float = Field(..., ge=0)
+    eur_per_mw_h: float = Field(..., ge=0, description="Expected activation revenue (EUR/MW/h).")
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +250,60 @@ class ActivationRevenueEntry(BaseModel):
 
 
 class ReservationBidPlanRequest(BaseModel):
-    """Request body for ``POST /v1/reservation-bids`` (the planner)."""
+    """Request body for ``POST /v1/reservation-bids`` (the planner).
 
-    sites: list[SiteRequest] = Field(..., min_length=1, max_length=1)
-    timespan: TimeSpanRequest
-    services: list[ServiceCode] = Field(..., min_length=1)
-    acceptance: list[BidAcceptanceEntry] = Field(..., min_length=1)
-    expected_activation_revenue: list[ActivationRevenueEntry] = Field(default_factory=list)
-    assume_maximal: bool = False
+    The on-prem server enforces:
+
+    * Exactly one site in ``sites`` (the v1 planner targets a single site).
+    * ``timespan`` must be a single calendar day starting at local-tz
+      midnight, at 15-minute resolution (96 intervals).
+    * Exactly one ANS-capable device on the site (declared via
+      ``CHPProperties.ans_abilities`` or equivalent).
+    * ``acceptance`` must cover the **Cartesian product** of
+      ``services`` and the six 4-hour blocks of the day. For aFRR+ and
+      aFRR- this is 12 entries (2 services x 6 blocks). Missing a single
+      (service, block) entry returns 422 ``TRANSLATION_ERROR``.
+    * Each ``acceptance`` entry's ``interval_start`` must land on a 4-hour
+      block boundary: ``00:00``, ``04:00``, ``08:00``, ``12:00``, ``16:00``,
+      ``20:00`` of the target day. See
+      :func:`site_calc_operational.models.four_hour_block_starts`.
+    """
+
+    sites: list[SiteRequest] = Field(
+        ..., min_length=1, max_length=1, description="Exactly one site (v1 planner constraint)."
+    )
+    timespan: TimeSpanRequest = Field(..., description="Single calendar day, local-tz midnight, 15-minute resolution.")
+    services: list[ServiceCode] = Field(
+        ..., min_length=1, description="ANS services to bid into, e.g. ``['afrr_plus', 'afrr_minus']``."
+    )
+    acceptance: list[BidAcceptanceEntry] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Acceptance distribution per ``(service, 4-hour block)`` pair. Must cover the "
+            "full Cartesian product of ``services`` and the six 4-hour blocks of the day "
+            "(12 entries for 2 services). Missing a single combination returns 422."
+        ),
+    )
+    expected_activation_revenue: list[ActivationRevenueEntry] = Field(
+        default_factory=list,
+        description=(
+            "Per-(service, block) expected EUR/MW/h from activation, **on top of** the "
+            "capacity payment. Defaults to empty (no activation upside)."
+        ),
+    )
+    assume_maximal: bool = Field(
+        default=False,
+        description=(
+            "If True, restrict Pass 2 to maximal-feasible Variants only (the planner skips "
+            "any Variant that's a strict subset of a feasible one). Faster (~1.5-3.5x on "
+            "measured fixtures) but unsafe when the acceptance distribution's upper tail "
+            "is bounded -- can prune the true optimum. The planner emits a "
+            "``diagnostics.winner_is_maximal`` flag so you can verify per-run whether the "
+            "preconditions held; flip this to True only after observing "
+            "``winner_is_maximal=True`` consistently. Default False (exhaustive)."
+        ),
+    )
     optimization_config: OptimizationConfig | None = None
     metadata: dict[str, Any] | None = None
 

@@ -13,8 +13,11 @@ it on the way out, and ``model_validate`` the response on the way back in:
     raw = client.build_reservation_bids(req.model_dump(mode="json"))
     result = ReservationBidPlanResult.model_validate(raw)
 
-Other endpoints (``device_planning``, ``runs``, ``optimal_bidding``) are not
-modelled yet -- scope of v0.2.1 is reservation-bid only.
+Other endpoints (``device_planning``, ``runs``, ``optimal_bidding``)
+response shapes are not modelled yet -- scope of the typed surface is
+reservation-bid only. Shared structural types
+(``TimeSpanRequest``, ``SiteRequest``, ``DeviceRequest``,
+``OptimizationConfig``) are reusable from the device-planning request side.
 """
 
 from site_calc_operational.models.devices import (
@@ -37,6 +40,11 @@ from site_calc_operational.models.devices import (
     HeatExportProperties,
     Profile,
     TypedDevice,
+)
+from site_calc_operational.models.helpers import (
+    build_uniform_acceptance,
+    build_zero_activation_revenue,
+    four_hour_block_starts,
 )
 from site_calc_operational.models.reservation_bids import (
     AcceptanceDistributionInput,
@@ -103,4 +111,8 @@ __all__ = [
     "HeatDemandDevice",
     "HeatExportDevice",
     "TypedDevice",
+    # Convenience helpers
+    "build_uniform_acceptance",
+    "build_zero_activation_revenue",
+    "four_hour_block_starts",
 ]

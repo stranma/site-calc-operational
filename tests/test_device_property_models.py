@@ -263,6 +263,86 @@ def test_property_field_parity_with_server_translator() -> None:
         )
 
 
+def test_site_request_accepts_typed_devices() -> None:
+    """SiteRequest.devices must accept the typed device wrappers directly,
+    not just the loose DeviceRequest. Otherwise the typed-device classes
+    shipped in v0.2.1 are dead weight."""
+    from site_calc_operational.models import SiteRequest
+
+    site = SiteRequest(
+        site_id="s1",
+        devices=[
+            CHPDevice(
+                name="CHP",
+                properties=CHPProperties(
+                    gas_input=2.5,
+                    el_output=1.0,
+                    heat_output=1.0,
+                    ans_abilities=[
+                        ANSAbility(service="afrr_plus", min_device_power_rate=0.0, max_device_power_rate=1.0),
+                    ],
+                ),
+            ),
+        ],
+    )
+    assert isinstance(site.devices[0], CHPDevice)
+    assert isinstance(site.devices[0].properties, CHPProperties)
+
+
+def test_site_request_accepts_loose_device_requests() -> None:
+    """Back-compat: SiteRequest.devices still accepts the generic DeviceRequest
+    so unknown device types (or types not yet modelled) flow through."""
+    from site_calc_operational.models import DeviceRequest, SiteRequest
+
+    site = SiteRequest(
+        site_id="s1",
+        devices=[DeviceRequest(name="Bar", type="something_unknown", properties={"k": 1})],
+    )
+    assert isinstance(site.devices[0], DeviceRequest)
+    assert site.devices[0].type == "something_unknown"
+
+
+def test_site_request_mixes_typed_and_loose() -> None:
+    """A single SiteRequest can carry a mix of typed and dict-based devices.
+    Each device is parsed to its appropriate class."""
+    from site_calc_operational.models import DeviceRequest, SiteRequest
+
+    site = SiteRequest(
+        site_id="s1",
+        devices=[
+            CHPDevice(
+                name="CHP",
+                properties=CHPProperties(gas_input=2.5, el_output=1.0, heat_output=1.0),
+            ),
+            DeviceRequest(name="Bar", type="unknown_kind", properties={}),
+        ],
+    )
+    assert isinstance(site.devices[0], CHPDevice)
+    assert isinstance(site.devices[1], DeviceRequest)
+
+
+def test_site_request_parse_dispatches_known_types_to_typed_devices() -> None:
+    """When parsing from JSON, known type literals dispatch to the typed
+    subclass; unknown types fall through to DeviceRequest."""
+    from site_calc_operational.models import DeviceRequest, SiteRequest
+
+    site = SiteRequest.model_validate(
+        {
+            "site_id": "s1",
+            "devices": [
+                {
+                    "name": "CHP",
+                    "type": "chp",
+                    "properties": {"gas_input": 2.5, "el_output": 1.0, "heat_output": 1.0},
+                },
+                {"name": "Bar", "type": "future_type", "properties": {}},
+            ],
+        }
+    )
+    assert isinstance(site.devices[0], CHPDevice)
+    assert isinstance(site.devices[1], DeviceRequest)
+
+
 def test_typed_device_type_literal_matches_class() -> None:
     """The ``type`` literal on each typed device must be the string the server
     expects -- e.g. CHPDevice.type == 'chp', not 'CHP'."""
