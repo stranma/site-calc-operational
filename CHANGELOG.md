@@ -24,7 +24,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from `ONPREM_API_KEY` (required) and `ONPREM_BASE_URL`, or from a
   KEY=VALUE file pointed to by `--env-file` / `ONPREM_ENV_FILE`. Covers
   health, planner + idempotency replay, evaluate cross-check, MPR
-  cross-check, 422 `TRANSLATION_ERROR`, and 401.
+  cross-check, the CHP temporal-constraint round-trip (`must_run` /
+  `must_be_idle` / `min_continuous_run_hours`), 422 `TRANSLATION_ERROR`,
+  and 401 -- eight steps total.
 
 ## [0.3.0] - 2026-05-21
 
