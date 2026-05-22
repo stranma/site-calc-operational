@@ -11,20 +11,24 @@ upstream rather than bypassed here.
 
 What it checks (against a live, authenticated on-prem server):
 
-  [1/7] ``GET /v1/health`` returns ``status='ok'`` and ``db_ok=True``
-  [2/7] ``POST /v1/reservation-bids`` returns 1..6 bids, positive revenue,
+  [1/8] ``GET /v1/health`` returns ``status='ok'`` and ``db_ok=True``
+  [2/8] ``POST /v1/reservation-bids`` returns 1..6 bids, positive revenue,
         ``diagnostics.winner_is_maximal=True``, and a
         ``most_probable_realization`` consistent with the bundled
         ``evaluation.expected_revenue``
-  [3/7] Idempotency replay -- the same ``Idempotency-Key`` returns the
+  [3/8] Idempotency replay -- the same ``Idempotency-Key`` returns the
         same body and the server sets ``X-Idempotent-Replay: true``
-  [4/7] ``POST /v1/reservation-bids/evaluate`` on the planner's own bids
+  [4/8] ``POST /v1/reservation-bids/evaluate`` on the planner's own bids
         reproduces the planner's expected revenue bit-exactly
-  [5/7] ``POST /v1/reservation-bids/most-probable-realization`` standalone
+  [5/8] ``POST /v1/reservation-bids/most-probable-realization`` standalone
         matches the planner's bundled MPR field-by-field
-  [6/7] 422 ``TRANSLATION_ERROR`` when ``ans_abilities`` is stripped
+  [6/8] CHP temporal constraints (``must_run``, ``must_be_idle``,
+        ``min_continuous_run_hours``) round-trip end-to-end: forcing the
+        unit idle during the evening peak materially lowers the planner's
+        expected revenue vs the unconstrained baseline.
+  [7/8] 422 ``TRANSLATION_ERROR`` when ``ans_abilities`` is stripped
         (surfaces as :class:`ValidationError`)
-  [7/7] 401 with a bogus bearer (surfaces as
+  [8/8] 401 with a bogus bearer (surfaces as
         :class:`AuthenticationError`)
 
 The 422 path is a server validation rejection -- no solve is triggered.
@@ -241,18 +245,18 @@ def run(base_url: str, api_key: str) -> None:
 
     with OnPremClient(base_url=base_url, api_key=api_key, timeout_seconds=600.0) as client:
         # --- [1/7] health -------------------------------------------------
-        _print("1/7", f"GET {base_url}/v1/health")
+        _print("1/8", f"GET {base_url}/v1/health")
         h = client.health()
         _check(h.status == "ok", f"health status not ok: {h.status}")
         _check(h.db_ok is True, "db_ok is False")
         _print(
-            "1/7",
+            "1/8",
             f"  status={h.status}  service_version={h.service_version}  "
             f"site_calc={h.site_calc_version}  db_ok={h.db_ok}",
         )
 
         # --- [2/7] planner -----------------------------------------------
-        _print("2/7", f"POST /v1/reservation-bids -- Idempotency-Key: {plan_key}")
+        _print("2/8", f"POST /v1/reservation-bids -- Idempotency-Key: {plan_key}")
         t0 = time.monotonic()
         raw_plan = client.build_reservation_bids(plan_req_dict, idempotency_key=plan_key)
         elapsed = time.monotonic() - t0
@@ -270,13 +274,13 @@ def run(base_url: str, api_key: str) -> None:
             f"evaluation revenue mismatch: {plan.evaluation.expected_revenue} vs {plan.expected_revenue}",
         )
         _print(
-            "2/7",
+            "2/8",
             f"  bids={len(plan.bids)}  expected_revenue={plan.expected_revenue:.2f} EUR  "
             f"variants={plan.diagnostics.get('variant_count')}  wall={elapsed:.1f}s",
         )
 
         # --- [3/7] idempotency replay ------------------------------------
-        _print("3/7", "POST /v1/reservation-bids (same Idempotency-Key) -- replay expected")
+        _print("3/8", "POST /v1/reservation-bids (same Idempotency-Key) -- replay expected")
         raw_replay = client.build_reservation_bids(plan_req_dict, idempotency_key=plan_key)
         replay_header = client.last_response_headers.get("x-idempotent-replay")
         _check(
@@ -284,10 +288,10 @@ def run(base_url: str, api_key: str) -> None:
             f"X-Idempotent-Replay header missing or wrong: {replay_header!r}",
         )
         _check(raw_replay == raw_plan, "replay body differs from original")
-        _print("3/7", "  X-Idempotent-Replay: true; body matches (no second planner run charged)")
+        _print("3/8", "  X-Idempotent-Replay: true; body matches (no second planner run charged)")
 
         # --- [4/7] evaluate ----------------------------------------------
-        _print("4/7", "POST /v1/reservation-bids/evaluate (planner's own bids)")
+        _print("4/8", "POST /v1/reservation-bids/evaluate (planner's own bids)")
         # plan.bids are ReservationBidOut; the evaluate request takes
         # ReservationBidIn. Round-trip through model_dump to coerce -- they
         # share field names.
@@ -304,10 +308,10 @@ def run(base_url: str, api_key: str) -> None:
             math.isclose(eval_rev, plan.expected_revenue, rel_tol=1e-9),
             f"evaluate disagrees with planner: {eval_rev} vs {plan.expected_revenue}",
         )
-        _print("4/7", f"  expected_revenue={eval_rev:.6f} EUR (matches planner bit-exactly)")
+        _print("4/8", f"  expected_revenue={eval_rev:.6f} EUR (matches planner bit-exactly)")
 
         # --- [5/7] MPR standalone ----------------------------------------
-        _print("5/7", "POST /v1/reservation-bids/most-probable-realization")
+        _print("5/8", "POST /v1/reservation-bids/most-probable-realization")
         # Server's MPR endpoint takes the same shape as evaluate, minus
         # ``expected_activation_revenue``. Reuse the typed evaluate payload.
         mpr_req = ReservationBidMPRRequest(
@@ -325,14 +329,50 @@ def run(base_url: str, api_key: str) -> None:
                 f"MPR {key} mismatch: standalone={standalone} bundled={bundled}",
             )
         _print(
-            "5/7",
+            "5/8",
             f"  contracts={len(raw_mpr['contracts'])}  "
             f"realized_revenue={raw_mpr['realized_revenue']:.2f}  "
             f"P(joint)={raw_mpr['joint_probability']:.3f}",
         )
 
-        # --- [6/7] 422 TRANSLATION_ERROR on missing ANS ------------------
-        _print("6/7", "expect 422 TRANSLATION_ERROR when ans_abilities is stripped")
+        # --- [6/8] temporal constraints round-trip ----------------------
+        _print(
+            "6/8",
+            "POST /v1/reservation-bids with must_run / must_be_idle / min_continuous_run_hours set",
+        )
+        # Evening peak (16:00-20:00) is the day's most profitable block in
+        # the baseline DA profile, so forcing the CHP idle there must lower
+        # the planner's expected revenue meaningfully -- the cleanest end-to-
+        # end signal that the new fields traversed wire -> translator -> LP.
+        # 15-minute resolution: each 4-hour block is 16 intervals.
+        evening_peak_idle = [0] * 64 + [1] * 16 + [0] * 16
+        morning_must_run = [0] * 16 + [1] * 16 + [0] * 64  # 04:00-08:00, profitable anyway
+        constrained_req = deepcopy(plan_req_dict)
+        constrained_props = constrained_req["sites"][0]["devices"][0]["properties"]
+        constrained_props["must_be_idle"] = evening_peak_idle
+        constrained_props["must_run"] = morning_must_run
+        constrained_props["min_continuous_run_hours"] = 2.0
+        constrained_key = f"py-rb-prod-{ts_tag}-constrained"
+        raw_constrained = client.build_reservation_bids(constrained_req, idempotency_key=constrained_key)
+        constrained_plan = ReservationBidPlanResult.model_validate(raw_constrained)
+        _check(
+            constrained_plan.expected_revenue > 0,
+            f"constrained expected_revenue non-positive: {constrained_plan.expected_revenue}",
+        )
+        _check(
+            constrained_plan.expected_revenue < plan.expected_revenue - 1.0,
+            f"must_be_idle on evening peak should lower revenue; "
+            f"baseline={plan.expected_revenue:.2f}, constrained={constrained_plan.expected_revenue:.2f}",
+        )
+        _print(
+            "6/8",
+            f"  baseline={plan.expected_revenue:.2f} EUR  "
+            f"constrained={constrained_plan.expected_revenue:.2f} EUR  "
+            f"delta={plan.expected_revenue - constrained_plan.expected_revenue:.2f} EUR",
+        )
+
+        # --- [7/8] 422 TRANSLATION_ERROR on missing ANS ------------------
+        _print("7/8", "expect 422 TRANSLATION_ERROR when ans_abilities is stripped")
         bad_req = deepcopy(plan_req_dict)
         bad_req["sites"][0]["devices"][0]["properties"]["ans_abilities"] = []
         try:
@@ -342,14 +382,14 @@ def run(base_url: str, api_key: str) -> None:
                 exc.code == "TRANSLATION_ERROR",
                 f"expected TRANSLATION_ERROR, got code={exc.code!r} message={exc.message!r}",
             )
-            _print("6/7", f"  HTTP 422 TRANSLATION_ERROR (as expected): {exc}")
+            _print("7/8", f"  HTTP 422 TRANSLATION_ERROR (as expected): {exc}")
         except OnPremError as exc:  # pragma: no cover - other 4xx surfaces here
             raise AssertionError(f"expected ValidationError 422, got {type(exc).__name__}: {exc}") from exc
         else:
             raise AssertionError("expected ValidationError 422; server returned 200")
 
-        # --- [7/7] 401 with bogus bearer ---------------------------------
-        _print("7/7", "expect 401 with a bogus bearer")
+        # --- [8/8] 401 with bogus bearer ---------------------------------
+        _print("8/8", "expect 401 with a bogus bearer")
     # Re-enter with a fresh client to avoid polluting the good client's
     # state with the bad bearer (the OnPremClient header is set per-instance
     # at construction time, so this is a clean second client).
@@ -362,7 +402,7 @@ def run(base_url: str, api_key: str) -> None:
         try:
             bogus.build_reservation_bids(plan_req_dict)
         except AuthenticationError as exc:
-            _print("7/7", f"  HTTP 401 (as expected): {exc}")
+            _print("8/8", f"  HTTP 401 (as expected): {exc}")
         except OnPremError as exc:  # pragma: no cover
             raise AssertionError(f"expected AuthenticationError 401, got {type(exc).__name__}: {exc}") from exc
         else:
