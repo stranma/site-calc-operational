@@ -1,16 +1,16 @@
 [project]
 name = "site-calc-operational"
-version = "0.3.1"
-description = "Python client for Site-Calc operational optimization (day-ahead bidding, ANS)"
+version = "0.2.0"
+description = "Python client for the site-calc operational planning server: reservation and day-ahead bids for a battery or CHP site"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Site-Calc Team", email = "info@site-calc.example.com"}
+    {name = "Martin Stransky"}
 ]
-keywords = ["energy", "optimization", "bidding", "ancillary-services", "day-ahead"]
+keywords = ["energy", "optimization", "bidding", "ancillary-services", "day-ahead", "battery"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -19,34 +19,28 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
 ]
 
 dependencies = [
-    "pydantic>=2.0",
-    "httpx>=0.24",
-    "python-dateutil>=2.8",
+    "pydantic>=2.7",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-mcp = ["fastmcp>=2.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
-    "pytest-asyncio>=0.21",
+    "pytest-timeout>=2.2",
     "respx>=0.21",
-    "ruff>=0.1",
-    "mypy>=1.0",
-    "fastmcp>=2.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
 ]
 
-[project.scripts]
-site-calc-operational-mcp = "site_calc_operational.mcp.server:main"
-
 [project.urls]
-Homepage = "https://github.com/site-calc/operational-client"
-Documentation = "https://docs.site-calc.example.com/operational-client"
-Repository = "https://github.com/site-calc/operational-client"
-Issues = "https://github.com/site-calc/operational-client/issues"
+Homepage = "https://github.com/stranma/site-calc-operational"
+Repository = "https://github.com/stranma/site-calc-operational"
+Changelog = "https://github.com/stranma/site-calc-operational/blob/master/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -58,16 +52,19 @@ packages = ["site_calc_operational"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
-python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --cov=site_calc_operational --cov-report=term-missing"
+addopts = "-m 'not production'"
+markers = [
+    "production: hits a live server; needs SITE_CALC_OPERATIONAL_URL and SITE_CALC_OPERATIONAL_API_KEY",
+]
+timeout = 120
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
+select = ["E", "F", "I", "N", "W", "UP", "B"]
 ignore = []
 
 [tool.mypy]
@@ -75,3 +72,4 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]

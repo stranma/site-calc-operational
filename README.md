@@ -1,308 +1,151 @@
-# Site-Calc Operational Client
+# site-calc-operational
 
-Python client for the Site-Calc operational optimization API -- day-ahead bidding, short-term dispatch, and ancillary-services (aFRR/mFRR) reservation-bid planning.
+Python client for the site-calc operational planning server. You bring the
+day-ahead price forecast and the reservation-market acceptance forecast; the
+server returns the bids for one delivery day of a battery (or CHP) site.
 
-The package ships two HTTP clients:
+Two calls per day, in the order the markets close:
 
-| Client | Server | Pattern | Status |
-|--------|--------|---------|--------|
-| **`OnPremClient`** | Self-hosted `server-onprem` | Synchronous (one HTTP call blocks until the solve completes) | **Primary** -- typed models for the reservation-bid family |
-| `OperationalClient` | SaaS REST API | Async submit-then-poll | Legacy; kept for existing callers |
+1. `plan_reservation()` before the reservation gate: capacity bids per
+   4-hour block for the ancillary services you are prequalified for, with the
+   expected revenue and the most likely outcome.
+2. `plan_day_ahead()` after the reservation results are known and before the
+   day-ahead gate: signed price-taker bids per quarter-hour that honour the
+   cleared reservations, plus the planned schedule and the end-of-day state
+   of charge to carry into tomorrow.
 
-This README focuses on the on-prem reservation-bid flow added in v0.3.0. For the legacy SaaS workflow see the bottom section.
+The client is synchronous, fully typed (`py.typed`), and depends only on
+`httpx` and `pydantic`. Version 0.2.x talks to a 0.2.x server.
 
 ## Installation
 
-> **Note:** the package is not yet published to PyPI. Install from source.
-
 ```bash
-# From source:
+pip install site-calc-operational        # once published; until then:
 pip install git+https://github.com/stranma/site-calc-operational.git
-
-# With the MCP-server extra (Claude Desktop / Cursor / ChatGPT integration):
-pip install "site-calc-operational[mcp] @ git+https://github.com/stranma/site-calc-operational.git"
-
-# Local development:
-git clone https://github.com/stranma/site-calc-operational.git
-cd site-calc-operational
-pip install -e ".[dev]"
 ```
 
-## Quick Start -- reservation-bid plan against an on-prem server
+Python 3.10 or newer.
+
+## Quick start
 
 ```python
-"""Submit a day-ahead reservation-bid plan for a binary CHP unit
-prequalified for aFRR+ and aFRR-, against a self-hosted server-onprem
-deployment. Uses the typed Pydantic models added in v0.3.0."""
-
-import os
-from datetime import datetime, timedelta, timezone
-
-from site_calc_operational import OnPremClient
-from site_calc_operational.models import (
-    ANSAbility,
-    CHPDevice,
-    CHPProperties,
-    ElectricityExportDevice,
-    ElectricityExportProperties,
-    GasImportDevice,
-    GasImportProperties,
-    HeatExportDevice,
-    HeatExportProperties,
-    LogNormalParams,
-    ReservationBidPlanRequest,
-    ReservationBidPlanResult,
-    SiteRequest,
-    TimeSpanRequest,
-    build_uniform_acceptance,
-    build_zero_activation_revenue,
+from datetime import date
+from site_calc_operational import (
+    ANSAbility, AnsForecastEntry, Battery, ClearedReservation, Day, ElectricityExport,
+    ElectricityImport, LogNormal, OperationalClient, PlanDayAheadRequest, PlanReservationRequest, Site,
 )
 
-# 1. Timespan: one calendar day at 15-minute resolution, local-tz midnight.
-#    The on-prem reservation-bid planner enforces this shape.
-prague_offset = timezone(timedelta(hours=2))  # use ZoneInfo("Europe/Prague") if tzdata is available
-period_start = datetime(2026, 5, 21, 0, 0, tzinfo=prague_offset)
-timespan = TimeSpanRequest(
-    period_start=period_start,
-    period_end=period_start + timedelta(days=1),
-    resolution="15min",
-)
-
-# 2. Site: one ANS-capable device (CHP with declared aFRR+/- abilities)
-#    plus the supporting market interfaces the planner needs to close
-#    energy balances. SiteRequest.devices accepts typed wrappers directly.
-PRICE_SAMPLES = 96  # 24h * 4 intervals/h
-
-site = SiteRequest(
-    site_id="cz-chp-1",
+site = Site(
+    site_id="my-bess",
     devices=[
-        CHPDevice(
-            name="CHP-bin",
-            properties=CHPProperties(
-                gas_input=2.5, el_output=1.0, heat_output=1.0,
-                is_binary=True, max_starts_per_day=4,
-                ans_abilities=[
-                    ANSAbility(service="afrr_plus", min_device_power_rate=0.0, max_device_power_rate=1.0),
-                    ANSAbility(service="afrr_minus", min_device_power_rate=0.0, max_device_power_rate=1.0),
-                ],
-            ),
+        Battery(
+            name="BESS", capacity_mwh=2.0, max_power_mw=1.0, efficiency=0.9,
+            initial_soc_mwh=1.0,                      # state at midnight; tomorrow: plan.soc_end_mwh
+            ans_abilities=[
+                ANSAbility(service="afrr_plus", min_device_power_rate=0.0, max_device_power_rate=1.0),
+                ANSAbility(service="afrr_minus", min_device_power_rate=0.0, max_device_power_rate=1.0),
+            ],
         ),
-        GasImportDevice(
-            name="Gas",
-            properties=GasImportProperties(price=[35.0] * PRICE_SAMPLES, max_import=2.5),
-        ),
-        ElectricityExportDevice(
-            name="ElExport",
-            properties=ElectricityExportProperties(price=[100.0] * PRICE_SAMPLES, max_export=1.0),
-        ),
-        HeatExportDevice(
-            name="HeatExport",
-            properties=HeatExportProperties(price=[5.0] * PRICE_SAMPLES, max_export=1.0),
-        ),
+        ElectricityImport(name="GridBuy", max_import_mw=1.0, buy_fee_eur_per_mwh=1.5),
+        ElectricityExport(name="GridSell", max_export_mw=1.0, sell_fee_eur_per_mwh=1.0),
     ],
 )
 
-# 3. Acceptance distribution: one entry per (service, 4-hour block).
-#    build_uniform_acceptance fills the full Cartesian product (12 entries
-#    for 2 services x 6 blocks). LogNormalParams.from_mean_cv lets you
-#    specify the expected clearing price (EUR/MW/h) and CV directly,
-#    instead of the log-space mu.
-acceptance = build_uniform_acceptance(
-    timespan=timespan,
-    services=["afrr_plus", "afrr_minus"],
-    distribution=LogNormalParams.from_mean_cv(mean=8.0, cv=0.6),  # EUR/MW/h
+day = Day(
+    date=date(2026, 4, 15), tz="Europe/Prague",
+    da_price_eur_per_mwh_d=prices_d,      # 96 quarter-hour prices for the delivery day
+    da_price_eur_per_mwh_d1=prices_d1,    # 96 for the day after: required for a battery
 )
 
-# 4. Assemble request and submit.
-request = ReservationBidPlanRequest(
-    sites=[site],
-    timespan=timespan,
-    services=["afrr_plus", "afrr_minus"],
-    acceptance=acceptance,
-    expected_activation_revenue=build_zero_activation_revenue(
-        timespan=timespan, services=["afrr_plus", "afrr_minus"],
-    ),
-)
+forecast = [
+    AnsForecastEntry(service=s, block_index=b, distribution=LogNormal(mu=2.0, sigma=0.5),
+                     expected_activation_eur_per_mw_h=1.0)
+    for s in ("afrr_plus", "afrr_minus") for b in range(6)      # one entry per service and 4-hour block
+]
 
-with OnPremClient(
-    base_url="https://operational.algoenergy.cz",
-    api_key=os.environ["ONPREM_API_KEY"],
-    timeout_seconds=600.0,
-) as client:
-    raw = client.build_reservation_bids(
-        request.model_dump(mode="json"),
-        idempotency_key="rb-2026-05-21-v1",
+with OperationalClient("https://operational.example.com", "op_...") as client:
+    # 1. before the reservation gate
+    plan = client.plan_reservation(
+        PlanReservationRequest(site=site, day=day, services=["afrr_plus", "afrr_minus"], ans_forecast=forecast),
+        idempotency_key="my-bess-2026-04-15-reservation",     # a retry replays instead of re-planning
     )
+    for bid in plan.bids:
+        print(bid.service, bid.block_index, bid.volume_mw, bid.capacity_price_eur_per_mw_h)
+    print(plan.expected_revenue.total)
 
-# 5. Parse the response into a typed result.
-result = ReservationBidPlanResult.model_validate(raw)
-print(f"Expected revenue: {result.expected_revenue:.2f} EUR")
-print(f"winner_is_maximal: {result.diagnostics['winner_is_maximal']}")
-for bid in result.bids:
-    print(f"  {bid.service:<10}  {bid.interval_start}  vol={bid.volume_mw} MW  price={bid.capacity_price:.2f} EUR/MW/h")
-mpr = result.most_probable_realization
-print(f"\nMost-probable realization: {len(mpr.contracts)} contracts, realized {mpr.realized_revenue:.2f} EUR, P(joint)={mpr.joint_probability:.3f}")
+    # 2. after clearing, before the day-ahead gate
+    cleared = [ClearedReservation(service="afrr_plus", block_index=2, volume_mw=1.0)]   # what actually cleared
+    da = client.plan_day_ahead(PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared))
+    for bid in da.bids:              # 96, signed: > 0 sells, < 0 buys
+        ...
+    tomorrow_initial_soc = da.soc_end_mwh
 ```
 
-### Reservation-bid endpoints
+`examples/plan_bess_day.py` is the runnable version.
 
-`OnPremClient` wraps three endpoints from `server-onprem` v0.2+:
+## What you send
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `build_reservation_bids(request)` | `POST /v1/reservation-bids` | Run the planner. Returns the chosen bids + expected revenue + the planner's own most-probable realization + a re-evaluation cross-check, all in one round-trip. |
-| `evaluate_reservation_bids(request)` | `POST /v1/reservation-bids/evaluate` | Score a caller-supplied bid set (`expected_plan_revenue` with no search). Useful for re-checking a plan against an alternative acceptance distribution. |
-| `most_probable_realization(request)` | `POST /v1/reservation-bids/most-probable-realization` | For a caller-supplied plan, return the contracts that clear at >=50% probability + the day-ahead baseline + joint probability. |
+- **`Site`**: one device per type. A battery site is `Battery` +
+  `ElectricityExport` (+ `ElectricityImport` to charge from the grid). A CHP
+  site is `CHP` + `GasImport` + `ElectricityExport` (+ `HeatExport`). Only
+  one device carries `ans_abilities`.
+- **`Day`**: the delivery day, its timezone, and 96 day-ahead prices for it.
+  A battery also needs the 96 prices of the following day: the planner
+  values the energy left in the battery at midnight against them. Days on
+  which the clocks change cannot be planned.
+- **`ans_forecast`**: for each requested service and each of the six 4-hour
+  blocks, how likely a bid is to clear as a function of its price
+  (`LogNormal`, `LogNormalFromQuantiles` or `EmpiricalPercentiles`), and
+  the activation revenue you expect on top of the capacity payment.
+- **`ReservationParams`**: `planner="sitecalc"` (default) co-optimises
+  reservation and day-ahead and takes around ten minutes for two services;
+  `planner="baseline"` answers in seconds.
 
-All three accept `idempotency_key` for safe retries (24-hour replay window on the server) and respect the same `BackoffPolicy` for 503 backpressure.
+Request models reject unknown fields and re-check the server's rules
+locally, so a bad request fails before any HTTP call.
 
-### Typed models layer
+## What you get back
 
-`site_calc_operational.models` is **additive** -- the existing client methods still accept and return `dict[str, Any]`. You can adopt the typed layer incrementally:
+- **`ReservationPlan`**: `bids` (service, block, MW, EUR/MW/h, clearing
+  probability), `expected_revenue` (reservation, activation, day-ahead,
+  total), `most_probable_realization`, `diagnostics`, and `run` (server and
+  engine versions, planner, horizon, solve time).
+- **`DayAheadPlan`**: 96 `bids`, the `schedule` over the whole horizon (net
+  flow, state of charge and the bands the reservations impose),
+  `soc_end_mwh`, `objective_eur`, `market_fees_eur`, `run`.
 
-```python
-# Loose (still works):
-raw_request = {"sites": [...], "timespan": {...}, "services": [...], ...}
-client.build_reservation_bids(raw_request)
+`docs/WIRE.md` lists every field.
 
-# Typed:
-typed_request = ReservationBidPlanRequest(sites=[...], timespan=..., services=[...], ...)
-client.build_reservation_bids(typed_request.model_dump(mode="json"))
-```
+## Errors and retries
 
-Reservation-bid model surface (see `models/__init__.py` for the full export list):
+Every failure is an `OperationalError` subclass with `code`, `message`,
+`details` and `http_status`: `ValidationError` (the request cannot be planned
+as sent), `DayNotPlannableError` (DST day, or a battery day without D+1
+prices), `InfeasibleError`, `AuthenticationError`, `IdempotencyConflictError`,
+`BusyError`, `ServerError`, `OperationalTimeoutError`, `TransportError`.
 
-- **Request bodies**: `ReservationBidPlanRequest`, `ReservationBidEvaluateRequest`, `ReservationBidMPRRequest`
-- **Response bodies**: `ReservationBidPlanResult`, `EvaluationResult`, `MostProbableRealizationResult`
-- **Acceptance distribution** (discriminated union by `type`): `LogNormalParams`, `LogNormalFromQuantilesParams`, `EmpiricalPercentilesParams`
-- **Leaves**: `BidAcceptanceEntry`, `ReservationBidIn`, `ReservationBidOut`, `ActivationRevenueEntry`, `ANSAbility`
-- **Typed devices** (`SiteRequest.devices` accepts these directly): `CHPDevice`, `BatteryDevice`, `HeatAccumulatorDevice`, `HeatDemandDevice`, plus the four market-interface variants
-- **Convenience helpers**: `four_hour_block_starts`, `build_uniform_acceptance`, `build_zero_activation_revenue`, `LogNormalParams.from_mean_cv`
+The server computes one plan at a time. On `503 BUSY` the client waits and
+retries (default: up to 5 times, 30 s doubling to 120 s, honouring
+`Retry-After`); pass `busy_retry=None` to raise at once, or your own
+`BusyRetry`. The default read timeout is 20 minutes; always send an
+`idempotency_key` on planning calls so that a retry after a dropped
+connection returns the stored plan (`client.last_call_was_replay`).
 
-Field-name parity with the on-prem server's wire schema is pinned by `tests/test_reservation_bid_models.py` and `tests/test_device_property_models.py`. When the server schema changes, these tests fail before any client-side code drifts. See `docs/MIRRORING.md` for the sync procedure.
+## Runs
 
-### Other on-prem methods
-
-Besides reservation bids, `OnPremClient` also exposes the older device-planning + run-inspection surface (still `dict`-typed):
-
-```python
-with OnPremClient(base_url=..., api_key=...) as client:
-    info = client.health()                                    # /v1/health
-    result = client.device_planning(request_payload)          # /v1/device-planning
-    run = client.get_run(run_id)                              # /v1/runs/{id}
-    runs = client.list_runs(endpoint="reservation-bids")      # /v1/runs?endpoint=...
-    cancelled = client.cancel_active()                        # /v1/runs/active/cancel
-```
-
-### Error handling
-
-Typed exception hierarchy mirrors the server's error envelope (`onprem_exceptions.py`):
-
-- `BusyError` -- 503 after `BackoffPolicy` retries exhaust
-- `InfeasibleScenarioError` -- 422 `INFEASIBLE`. `exc.details.debug_lp_b64` carries the optimizer's LP file (base64) for offline debugging
-- `ValidationError` -- 422 `TRANSLATION_ERROR` (or any other 422)
-- `AuthenticationError` -- 401
-- `CancelledError` -- 499
-- `OnPremTimeoutError` -- client-side httpx timeout
-- `ServerError` -- unexpected 5xx
-- `OnPremError` -- base class for all of the above
-
-## Capabilities
-
-| Feature | Value |
-|---------|-------|
-| Reservation-bid planner | aFRR+, aFRR-, mFRR+, mFRR- (v1 supports a single ANS-capable device) |
-| Device planning | All material types: electricity, heat, gas |
-| Resolution | 15-minute or 1-hour |
-| Max horizon | Reservation-bid planner: one calendar day. Device planning: longer horizons supported |
-| Binary variables | Yes (CHP on/off, max-starts-per-day) |
-| ANS abilities | Per-device prequalification declared via `ANSAbility` |
-| Idempotency | 24h replay window via `Idempotency-Key` header |
-
-## Supported device types (on-prem)
-
-`Battery`, `CHP`, `HeatAccumulator`, `HeatDemand`, plus the market interfaces `ElectricityImport`, `ElectricityExport`, `GasImport`, `HeatExport`. The `photovoltaic` and `electricity_demand` types are rejected by the on-prem server (`translate_device` raises a `TranslationError`); they're available in the SaaS client.
-
-## MCP server (LLM-driven scenario building)
-
-The package ships an optional [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes **20 tools** for building and submitting operational scenarios from an LLM (Claude Desktop, ChatGPT, Cursor, ...). Wraps `OnPremClient` and runs locally on the user's machine.
-
-### Install
-
-```bash
-pip install "site-calc-operational[mcp] @ git+https://github.com/stranma/site-calc-operational.git"
-```
-
-The extra pulls `fastmcp>=2.0`. Exposes a console script (`site-calc-operational-mcp`) and a module entry point (`python -m site_calc_operational.mcp`).
-
-### Configure the MCP client
-
-```bash
-export SITE_CALC_OPERATIONAL_API_URL="https://operational.algoenergy.cz"
-export SITE_CALC_OPERATIONAL_API_KEY="op_..."                    # mint with: site-calc-op create-user
-export SITE_CALC_OPERATIONAL_DATA_DIR="$HOME/.site-calc/data"    # optional; for save_data_file output
-```
-
-Then register with your MCP client. For Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json` on Windows, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-
-```json
-{
-  "mcpServers": {
-    "site-calc-operational": {
-      "command": "site-calc-operational-mcp",
-      "env": {
-        "SITE_CALC_OPERATIONAL_API_URL": "https://operational.algoenergy.cz",
-        "SITE_CALC_OPERATIONAL_API_KEY": "op_..."
-      }
-    }
-  }
-}
-```
-
-### Tools exposed (20 total)
-
-| Category | Tools |
-|----------|-------|
-| Server info | `health`, `get_version` |
-| Scenario assembly | `create_scenario`, `add_device`, `remove_device`, `set_timespan`, `set_optimization_config`, `review_scenario`, `delete_scenario`, `list_scenarios` |
-| Solving | `solve` (device planning), `cancel_active` |
-| **Reservation bids** | **`build_reservation_bids`, `evaluate_reservation_bids`, `most_probable_realization`** |
-| Run inspection | `get_run`, `list_runs` |
-| Schema / data | `get_device_schema`, `save_data_file`, `fetch_url` |
-
-## SaaS client (legacy)
-
-For backwards compatibility, `OperationalClient` targets the older async SaaS API. New work should use `OnPremClient`.
-
-```python
-from site_calc_operational import OperationalClient
-# Refer to existing operator runbooks; the API hasn't changed in this release.
-```
-
-## Schema mirroring
-
-`site_calc_operational.models` hand-mirrors selected wire schemas from `server-onprem` and device classes from `site-calc-core`. When either side changes upstream, the drift tests in this package fail before any client code silently desyncs. The full directive lives in [`docs/MIRRORING.md`](docs/MIRRORING.md) -- read it before editing anything under `site_calc_operational/models/`.
-
-## Requirements
-
-- Python >= 3.10
-- API key with `op_` prefix (operational client)
+Every call is stored on the server. `list_runs()` pages through yours (newest
+first), `get_run(id)` returns one with the request as validated and the
+response as returned, `cancel_active()` interrupts the plan in progress.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
-ruff format .
-mypy site_calc_operational
+uv venv && uv sync --extra dev
+uv run pytest                                 # mocked HTTP, no server needed
+uv run pytest -m production                   # live server: SITE_CALC_OPERATIONAL_URL, SITE_CALC_OPERATIONAL_API_KEY
+uv run ruff check site_calc_operational tests examples && uv run mypy site_calc_operational
 ```
 
 ## License
 
-MIT License
-
-## Support
-
-- Issues: https://github.com/site-calc/operational-client/issues
-- Schema sync procedure: [`docs/MIRRORING.md`](docs/MIRRORING.md)
-- Submodule-local Claude instructions: [`CLAUDE.md`](CLAUDE.md)
+MIT.

@@ -1,30 +1,140 @@
-"""Site-Calc Operational Client.
+"""site-calc-operational: plan a battery or CHP site's day from your own forecasts.
 
-Python client for day-ahead bidding and short-term dispatch optimization with
-ancillary services. Two top-level clients are exposed:
-
-- :class:`OperationalClient` -- async client for the SaaS REST API.
-- :class:`OnPremClient` -- sync client for self-hosted ``server-onprem``
-  deployments. Companion :class:`BackoffPolicy` and :class:`HealthInfo`
-  dataclasses are also exported.
-
-An optional MCP server (extra: ``site-calc-operational[mcp]``) wraps the
-on-prem client for LLM-driven scenario assembly.
+Two calls per delivery day: :meth:`OperationalClient.plan_reservation` before
+the reservation gate, :meth:`OperationalClient.plan_day_ahead` before the
+day-ahead gate. Everything is typed; see :mod:`site_calc_operational.models`.
 """
 
-from site_calc_operational.api.client import OperationalClient
-from site_calc_operational.api.onprem_client import (
-    BackoffPolicy,
+__version__ = "0.2.0"
+
+from site_calc_operational.client import (
+    API_KEY_PREFIX,
+    DEFAULT_TIMEOUT_SECONDS,
+    BusyRetry,
+    OperationalClient,
+)
+from site_calc_operational.exceptions import (
+    AuthenticationError,
+    BusyError,
+    CancelledError,
+    DayNotPlannableError,
+    IdempotencyConflictError,
+    InfeasibleError,
+    NotFoundError,
+    OperationalError,
+    OperationalTimeoutError,
+    RequestTooLargeError,
+    ServerError,
+    TransportError,
+    UnboundedError,
+    ValidationError,
+)
+from site_calc_operational.models import (
+    BLOCKS_PER_DAY,
+    CHP,
+    PRICE_TAKER_BUY_EUR_PER_MWH,
+    PRICE_TAKER_SELL_EUR_PER_MWH,
+    QUARTER_HOURS_PER_DAY,
+    ANSAbility,
+    AnsForecastEntry,
+    Battery,
+    ClearedReservation,
+    Day,
+    DayAheadBid,
+    DayAheadParams,
+    DayAheadPlan,
+    Device,
+    Distribution,
+    ElectricityExport,
+    ElectricityImport,
+    EmpiricalPercentiles,
+    ExpectedRevenue,
+    GasImport,
     HealthInfo,
-    OnPremClient,
+    HeatExport,
+    LogNormal,
+    LogNormalFromQuantiles,
+    MostProbableRealization,
+    PlanDayAheadRequest,
+    PlanReservationRequest,
+    ReservationBid,
+    ReservationParams,
+    ReservationPlan,
+    RunDetail,
+    RunEndpoint,
+    RunInfo,
+    RunsPage,
+    RunStatus,
+    RunSummary,
+    Schedule,
+    ServiceCode,
+    Site,
 )
 
-__version__ = "0.3.1"
-
 __all__ = [
-    "BackoffPolicy",
-    "HealthInfo",
-    "OnPremClient",
-    "OperationalClient",
     "__version__",
+    # Client
+    "API_KEY_PREFIX",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "BusyRetry",
+    "OperationalClient",
+    # Errors
+    "AuthenticationError",
+    "BusyError",
+    "CancelledError",
+    "DayNotPlannableError",
+    "IdempotencyConflictError",
+    "InfeasibleError",
+    "NotFoundError",
+    "OperationalError",
+    "OperationalTimeoutError",
+    "RequestTooLargeError",
+    "ServerError",
+    "TransportError",
+    "UnboundedError",
+    "ValidationError",
+    # Site
+    "ANSAbility",
+    "Battery",
+    "CHP",
+    "Device",
+    "ElectricityExport",
+    "ElectricityImport",
+    "GasImport",
+    "HeatExport",
+    "Site",
+    # Day and forecast
+    "AnsForecastEntry",
+    "BLOCKS_PER_DAY",
+    "Day",
+    "Distribution",
+    "EmpiricalPercentiles",
+    "LogNormal",
+    "LogNormalFromQuantiles",
+    "QUARTER_HOURS_PER_DAY",
+    "ServiceCode",
+    # Reservation step
+    "ExpectedRevenue",
+    "MostProbableRealization",
+    "PlanReservationRequest",
+    "ReservationBid",
+    "ReservationParams",
+    "ReservationPlan",
+    "RunInfo",
+    # Day-ahead step
+    "ClearedReservation",
+    "DayAheadBid",
+    "DayAheadParams",
+    "DayAheadPlan",
+    "PRICE_TAKER_BUY_EUR_PER_MWH",
+    "PRICE_TAKER_SELL_EUR_PER_MWH",
+    "PlanDayAheadRequest",
+    "Schedule",
+    # Health and runs
+    "HealthInfo",
+    "RunDetail",
+    "RunEndpoint",
+    "RunStatus",
+    "RunSummary",
+    "RunsPage",
 ]

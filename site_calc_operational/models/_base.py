@@ -1,14 +1,33 @@
-"""Shared base types used by both ``reservation_bids`` and ``devices`` modules.
-
-This module exists to break the ``devices.py -> reservation_bids.py`` import
-cycle that would otherwise prevent ``SiteRequest.devices`` from referencing
-the ``TypedDevice`` union from ``devices.py``. Anything imported by *both*
-sibling modules belongs here.
-"""
+"""Shared building blocks for the wire models."""
 
 from __future__ import annotations
 
 from typing import Literal
 
-# Lowercase wire codes; mirror ``site_calc.domain.ans.AncillaryService.code``.
+from pydantic import BaseModel, ConfigDict
+
 ServiceCode = Literal["afrr_plus", "afrr_minus", "mfrr_plus", "mfrr_minus"]
+"""Ancillary-service product codes the server understands.
+
+``afrr_plus`` / ``afrr_minus`` are automatic frequency restoration reserve in
+the upward (deliver power) and downward (absorb power) direction;
+``mfrr_plus`` / ``mfrr_minus`` are the manual reserve equivalents.
+"""
+
+BLOCKS_PER_DAY = 6
+"""Reservation is contracted per 4-hour block; block ``b`` covers local hours ``4b`` to ``4b + 4``."""
+
+QUARTER_HOURS_PER_DAY = 96
+"""Day-ahead prices and bids are per quarter-hour of a regular (non-DST) day."""
+
+
+class RequestModel(BaseModel):
+    """Base for everything sent to the server: unknown fields are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResponseModel(BaseModel):
+    """Base for everything received from the server: unknown fields are kept, not rejected."""
+
+    model_config = ConfigDict(extra="allow")
