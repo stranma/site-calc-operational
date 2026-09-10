@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-import uuid
 from datetime import date, timedelta
 
 from site_calc_operational import (
@@ -88,7 +87,9 @@ def main() -> int:
                     ans_forecast=forecast,
                     params=ReservationParams(planner="baseline"),  # "sitecalc" is better and slower
                 ),
-                idempotency_key=f"demo-reservation-{delivery_day}-{uuid.uuid4()}",
+                # Stable per day: a re-run after a timeout replays the stored plan instead of
+                # planning again. Change the key when you change the forecast.
+                idempotency_key=f"demo-bess-{delivery_day}-reservation",
             )
         except OperationalError as exc:
             print(f"reservation step failed: {exc}", file=sys.stderr)
@@ -96,10 +97,10 @@ def main() -> int:
 
         print(f"\nreservation bids for {delivery_day} ({plan.run.solve_seconds} s):")
         for bid in plan.bids:
+            p_clear = "?" if bid.forecast_clear_probability is None else f"{bid.forecast_clear_probability:.2f}"
             print(
                 f"  {bid.service:<11} block {bid.block_index}  {bid.volume_mw:5.2f} MW"
-                f" @ {bid.capacity_price_eur_per_mw_h:6.2f} EUR/MW/h"
-                f"  p(clear)={bid.forecast_clear_probability:.2f}"
+                f" @ {bid.capacity_price_eur_per_mw_h:6.2f} EUR/MW/h  p(clear)={p_clear}"
             )
         rev = plan.expected_revenue
         print(
@@ -113,7 +114,10 @@ def main() -> int:
             ClearedReservation(service=c.service, block_index=c.block_index, volume_mw=c.volume_mw)
             for c in plan.most_probable_realization.contracts
         ]
-        da = client.plan_day_ahead(PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared))
+        da = client.plan_day_ahead(
+            PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared),
+            idempotency_key=f"demo-bess-{delivery_day}-day-ahead",
+        )
 
         print(f"\nday-ahead bids (first 8 of {len(da.bids)}):")
         for bid in da.bids[:8]:

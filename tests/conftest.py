@@ -92,7 +92,7 @@ def reservation_plan_body() -> dict[str, Any]:
         },
         "diagnostics": {"winner_is_maximal": True},
         "run": {
-            "site_calc_version": "1.5.0",
+            "site_calc_version": "9.9.9",
             "site_calc_commit_sha": "abc123",
             "planner": "sitecalc",
             "params": {},
@@ -128,7 +128,7 @@ def day_ahead_plan_body() -> dict[str, Any]:
         "expected_da_value_eur": 44.0,
         "market_fees_eur": -3.0,
         "run": {
-            "site_calc_version": "1.5.0",
+            "site_calc_version": "9.9.9",
             "site_calc_commit_sha": "abc123",
             "planner": "day-ahead",
             "params": {},

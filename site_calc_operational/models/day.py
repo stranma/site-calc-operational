@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from site_calc_operational.models._base import RequestModel, ServiceCode
 
@@ -24,12 +24,12 @@ class Day(RequestModel):
     date: dt.date = Field(description="The delivery day D.")
     tz: str = Field(min_length=1, description="IANA timezone of the site, e.g. Europe/Prague.")
     da_price_eur_per_mwh_d: list[float] = Field(
-        min_length=92, max_length=100, description="96 day-ahead prices for day D, one per quarter-hour."
+        min_length=96, max_length=96, description="96 day-ahead prices for day D, one per quarter-hour."
     )
     da_price_eur_per_mwh_d1: list[float] | None = Field(
         default=None,
-        min_length=92,
-        max_length=100,
+        min_length=96,
+        max_length=96,
         description="96 day-ahead prices (or your forecast) for D+1. Required for a battery site.",
     )
 
@@ -43,21 +43,50 @@ class LogNormal(RequestModel):
 
 
 class LogNormalFromQuantiles(RequestModel):
-    """Log-normal fitted to ``(cdf_probability, price)`` pairs; give at least two with distinct probabilities."""
+    """Log-normal fitted to ``(probability, price)`` pairs.
+
+    Each pair reads "the clearing price is below ``price`` with ``probability``".
+    Give at least two pairs with distinct probabilities. Note the order:
+    probability first, price second (the opposite of :class:`EmpiricalPercentiles`).
+    """
 
     type: Literal["lognormal_from_quantiles"] = "lognormal_from_quantiles"
     quantiles: list[tuple[float, float]] = Field(
         min_length=2, description="Pairs (probability in (0, 1), price EUR/MW/h) the fitted curve must pass through."
     )
 
+    @model_validator(mode="after")
+    def _shape(self) -> LogNormalFromQuantiles:
+        probs = [p for p, _ in self.quantiles]
+        if any(not 0.0 < p < 1.0 for p in probs):
+            raise ValueError("quantiles: every probability must be strictly between 0 and 1")
+        if len(set(probs)) != len(probs):
+            raise ValueError("quantiles: probabilities must be distinct")
+        if any(x <= 0.0 for _, x in self.quantiles):
+            raise ValueError("quantiles: prices must be positive")
+        return self
+
 
 class EmpiricalPercentiles(RequestModel):
-    """Piecewise-linear survival curve: at each price, the probability that a bid at that price clears."""
+    """Piecewise-linear curve of "a bid at ``price`` clears with ``probability``", prices ascending.
+
+    Note the order: price first, probability second (the opposite of
+    :class:`LogNormalFromQuantiles`).
+    """
 
     type: Literal["empirical_percentiles"] = "empirical_percentiles"
     breakpoints: list[tuple[float, float]] = Field(
         min_length=2, description="Pairs (price EUR/MW/h, probability of clearing at that price), price ascending."
     )
+
+    @model_validator(mode="after")
+    def _shape(self) -> EmpiricalPercentiles:
+        prices = [x for x, _ in self.breakpoints]
+        if any(b <= a for a, b in zip(prices, prices[1:], strict=False)):
+            raise ValueError("breakpoints: prices must be strictly ascending")
+        if any(not 0.0 <= p <= 1.0 for _, p in self.breakpoints):
+            raise ValueError("breakpoints: every probability must be between 0 and 1")
+        return self
 
 
 Distribution = Annotated[
@@ -83,20 +112,19 @@ class AnsForecastEntry(RequestModel):
 class ReservationParams(RequestModel):
     """Planner knobs for the reservation step.
 
-    ``planner="sitecalc"`` co-optimises reservation and day-ahead over every
-    block combination of the requested services and is the recommended
-    setting; with two services it can take around ten minutes.
-    ``planner="baseline"`` prices each block at the larger of the opportunity
-    cost and the ``px_percentile`` quantile of the acceptance forecast, in
-    seconds.
+    ``planner="sitecalc"`` optimises reservation and day-ahead together and is
+    the recommended setting; with two services it takes around ten minutes.
+    ``planner="baseline"`` prices each block from your acceptance forecast at
+    ``px_percentile`` (never below what the day-ahead market would pay for
+    the same capacity), in seconds.
     """
 
     planner: Literal["sitecalc", "baseline"] = Field(default="sitecalc", description="Which planner to run.")
     assume_maximal: bool = Field(
         default=False,
         description=(
-            "Prune the co-optimiser to maximal-volume candidates. Faster; safe once "
-            "``diagnostics['winner_is_maximal']`` has held on comparable days without it."
+            "Faster variant of the sitecalc planner that only considers full-volume bids. "
+            "Use it once you have seen it choose the same bids as the default on comparable days."
         ),
     )
     px_percentile: float = Field(

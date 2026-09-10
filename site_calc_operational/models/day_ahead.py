@@ -5,9 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from site_calc_operational.models._base import RequestModel, ResponseModel, ServiceCode
+from site_calc_operational.models._base import (
+    RequestModel,
+    ResponseModel,
+    ServiceCode,
+    check_battery_has_next_day_prices,
+)
 from site_calc_operational.models.day import Day
 from site_calc_operational.models.reservation import RunInfo
 from site_calc_operational.models.site import Site
@@ -62,6 +67,17 @@ class PlanDayAheadRequest(RequestModel):
     params: DayAheadParams = Field(default_factory=DayAheadParams, description="Planner knobs.")
     metadata: dict[str, Any] | None = Field(default=None, description="Free-form tags stored with the run.")
 
+    @model_validator(mode="after")
+    def _consistent(self) -> PlanDayAheadRequest:
+        check_battery_has_next_day_prices(self.site, self.day)
+        declared = self.site.declared_services()
+        unknown = sorted({c.service for c in self.cleared_reservations} - declared)
+        if unknown:
+            raise ValueError(f"cleared_reservations name services no device declares an ability for: {unknown}")
+        if self.chp_pins and not any(d.type == "chp" for d in self.site.devices):
+            raise ValueError("chp_pins given but the site has no chp device")
+        return self
+
 
 class DayAheadBid(ResponseModel):
     """One price-taker bid for a quarter-hour of day D.
@@ -99,7 +115,11 @@ class DayAheadPlan(ResponseModel):
     bids: list[DayAheadBid] = Field(description="96 bids for day D, in quarter-hour order.")
     schedule: Schedule
     soc_end_mwh: float | None = Field(
-        default=None, description="Battery state at midnight after day D; pass it as tomorrow's initial_soc_mwh."
+        default=None,
+        description=(
+            "Planned battery state at midnight after day D. Use it as tomorrow's initial_soc_mwh "
+            "when you have no measurement; a measured state of charge is better."
+        ),
     )
     objective_eur: float = Field(description="Planned day value including market fees.")
     expected_da_value_eur: float = Field(description="Planned day-ahead value before fees.")

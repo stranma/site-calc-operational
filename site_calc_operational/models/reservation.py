@@ -7,7 +7,13 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from site_calc_operational.models._base import BLOCKS_PER_DAY, RequestModel, ResponseModel, ServiceCode
+from site_calc_operational.models._base import (
+    BLOCKS_PER_DAY,
+    RequestModel,
+    ResponseModel,
+    ServiceCode,
+    check_battery_has_next_day_prices,
+)
 from site_calc_operational.models.day import AnsForecastEntry, Day, ReservationParams
 from site_calc_operational.models.site import Site
 
@@ -31,6 +37,10 @@ class PlanReservationRequest(RequestModel):
 
     @model_validator(mode="after")
     def _coverage(self) -> PlanReservationRequest:
+        check_battery_has_next_day_prices(self.site, self.day)
+        undeclared = sorted(set(self.services) - self.site.declared_services())
+        if undeclared:
+            raise ValueError(f"services {undeclared} are not in any device's ans_abilities")
         seen = {(e.service, e.block_index) for e in self.ans_forecast}
         if len(seen) != len(self.ans_forecast):
             raise ValueError("ans_forecast has duplicate (service, block_index) entries")

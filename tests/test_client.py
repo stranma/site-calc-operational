@@ -23,8 +23,10 @@ from site_calc_operational import (
     OperationalTimeoutError,
     PlanDayAheadRequest,
     PlanReservationRequest,
+    RequestTooLargeError,
     ServerError,
     TransportError,
+    UnboundedError,
     ValidationError,
 )
 from tests.conftest import API_KEY, BASE_URL
@@ -92,6 +94,8 @@ def test_plan_day_ahead(
         (422, "DST_DAY_UNSUPPORTED", DayNotPlannableError),
         (422, "TWO_DAY_HORIZON_REQUIRED", DayNotPlannableError),
         (422, "INFEASIBLE", InfeasibleError),
+        (422, "UNBOUNDED", UnboundedError),
+        (413, "REQUEST_TOO_LARGE", RequestTooLargeError),
         (409, "IDEMPOTENCY_KEY_REUSED", IdempotencyConflictError),
         (499, "CANCELLED", CancelledError),
         (500, "INTERNAL_ERROR", ServerError),
@@ -177,7 +181,7 @@ def test_health_runs_and_cancel(client: OperationalClient, mock_api: respx.MockR
             json={
                 "status": "ok",
                 "service_version": "0.2.0",
-                "site_calc_version": "1.5.0",
+                "site_calc_version": "9.9.9",
                 "site_calc_commit_sha": "abc",
                 "db_ok": True,
                 "active_solve": False,

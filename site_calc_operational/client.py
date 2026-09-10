@@ -137,9 +137,10 @@ class OperationalClient:
     def health(self) -> HealthInfo:
         """Server liveness and versions. The server does not check the key on this route."""
         response = self._send("GET", "/v1/health")
-        if response.status_code not in (200, 503):
+        body = _json_or_text(response)
+        if response.status_code not in (200, 503) or not isinstance(body, dict) or "service_version" not in body:
             self._raise(response)
-        return HealthInfo.model_validate(response.json())
+        return HealthInfo.model_validate(body)
 
     def get_run(self, run_id: UUID | str) -> RunDetail:
         """One of your stored runs with its request and response bodies."""

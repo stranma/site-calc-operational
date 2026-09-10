@@ -73,7 +73,7 @@ def test_unknown_field_is_rejected() -> None:
 
 def test_day_price_lengths() -> None:
     with pytest.raises(PydanticValidationError):
-        Day(date="2026-04-15", tz="Europe/Prague", da_price_eur_per_mwh_d=[1.0] * 24)
+        Day(date="2026-04-15", tz="Europe/Prague", da_price_eur_per_mwh_d=[1.0] * 95)
     d = Day(date="2026-04-15", tz="Europe/Prague", da_price_eur_per_mwh_d=[1.0] * 96)
     assert d.da_price_eur_per_mwh_d1 is None
 
@@ -102,6 +102,8 @@ def test_distributions_discriminate_on_type() -> None:
 def test_reservation_request_forecast_coverage(site: Site, day: Day, forecast: list[AnsForecastEntry]) -> None:
     """Failure mode: a missing block would be a VALIDATION_ERROR from the server after a round trip."""
     with pytest.raises(PydanticValidationError, match="missing entries"):
+        PlanReservationRequest(site=site, day=day, services=["afrr_plus", "afrr_minus"], ans_forecast=forecast[:6])
+    with pytest.raises(PydanticValidationError, match="not in any device's ans_abilities"):
         PlanReservationRequest(site=site, day=day, services=["afrr_plus", "mfrr_plus"], ans_forecast=forecast)
     with pytest.raises(PydanticValidationError, match="duplicate"):
         PlanReservationRequest(site=site, day=day, services=["afrr_plus"], ans_forecast=forecast + forecast[:1])
@@ -118,18 +120,63 @@ def test_reservation_request_wire_shape(reservation_request: PlanReservationRequ
     assert wire["params"] == {"planner": "sitecalc", "assume_maximal": False, "px_percentile": 0.5}
 
 
+def test_battery_site_needs_next_day_prices(site: Site, day: Day, forecast: list[AnsForecastEntry]) -> None:
+    """Failure mode: forgetting D+1 prices for a battery would only surface after a server round trip."""
+    one_day = day.model_copy(update={"da_price_eur_per_mwh_d1": None})
+    with pytest.raises(PydanticValidationError, match="da_price_eur_per_mwh_d1"):
+        PlanReservationRequest(site=site, day=one_day, services=["afrr_plus"], ans_forecast=forecast)
+    with pytest.raises(PydanticValidationError, match="da_price_eur_per_mwh_d1"):
+        PlanDayAheadRequest(site=site, day=one_day)
+    chp_site = Site(
+        site_id="chp",
+        devices=[
+            CHP(name="chp", gas_input_mw=2.5, el_output_mw=1.0, heat_output_mw=1.3),
+            GasImport(name="gas", price_eur_per_mwh=30.0),
+            ElectricityExport(name="el"),
+        ],
+    )
+    assert PlanDayAheadRequest(site=chp_site, day=one_day).day.da_price_eur_per_mwh_d1 is None
+
+
 def test_day_ahead_request(site: Site, day: Day) -> None:
     req = PlanDayAheadRequest(
         site=site,
         day=day,
         cleared_reservations=[ClearedReservation(service="afrr_plus", block_index=1, volume_mw=0.6)],
-        chp_pins={2: 0.75},
     )
     wire = req.model_dump(mode="json", exclude_none=True)
     assert wire["cleared_reservations"] == [{"service": "afrr_plus", "block_index": 1, "volume_mw": 0.6}]
-    assert wire["chp_pins"] == {"2": 0.75}
+    assert wire["chp_pins"] == {}
     with pytest.raises(PydanticValidationError):
         ClearedReservation(service="afrr_plus", block_index=1, volume_mw=0.0)
+    # rules the server would otherwise reject after a round trip
+    mfrr = ClearedReservation(service="mfrr_plus", block_index=0, volume_mw=1)
+    with pytest.raises(PydanticValidationError, match="no device declares"):
+        PlanDayAheadRequest(site=site, day=day, cleared_reservations=[mfrr])
+    with pytest.raises(PydanticValidationError, match="no chp device"):
+        PlanDayAheadRequest(site=site, day=day, chp_pins={2: 0.75})
+    chp_site = Site(
+        site_id="chp",
+        devices=[
+            CHP(name="chp", gas_input_mw=2.5, el_output_mw=1.0, heat_output_mw=1.3),
+            GasImport(name="gas", price_eur_per_mwh=30.0),
+            ElectricityExport(name="el"),
+        ],
+    )
+    wire = PlanDayAheadRequest(site=chp_site, day=day, chp_pins={2: 0.75}).model_dump(mode="json")
+    assert wire["chp_pins"] == {"2": 0.75}
+
+
+def test_distribution_shape_rules() -> None:
+    """Failure mode: the two pair orders are opposite; a swapped pair must not reach the server."""
+    with pytest.raises(PydanticValidationError, match="strictly between 0 and 1"):
+        LogNormalFromQuantiles(quantiles=[(3.0, 0.1), (12.0, 0.9)])  # price, probability: swapped
+    with pytest.raises(PydanticValidationError, match="distinct"):
+        LogNormalFromQuantiles(quantiles=[(0.5, 3.0), (0.5, 12.0)])
+    with pytest.raises(PydanticValidationError, match="strictly ascending"):
+        EmpiricalPercentiles(breakpoints=[(20.0, 0.0), (0.0, 1.0)])
+    with pytest.raises(PydanticValidationError, match="between 0 and 1"):
+        EmpiricalPercentiles(breakpoints=[(0.0, 1.0), (20.0, 1.5)])
 
 
 def test_response_models_tolerate_new_fields(reservation_plan_body: dict, day_ahead_plan_body: dict) -> None:

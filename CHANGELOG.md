@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Rewritten from scratch against the operational planning server 0.2. The
 version now tracks the server's MAJOR.MINOR: 0.2.x talks to a 0.2.x server.
+Numbering therefore restarts below the previous 0.3.x line, which was never
+released and is not comparable; a `>=0.3` pin on a source install must be
+replaced.
 
 ### Added
 - `OperationalClient` with `plan_reservation()` and `plan_day_ahead()`: the

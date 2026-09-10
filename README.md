@@ -75,10 +75,13 @@ with OperationalClient("https://operational.example.com", "op_...") as client:
 
     # 2. after clearing, before the day-ahead gate
     cleared = [ClearedReservation(service="afrr_plus", block_index=2, volume_mw=1.0)]   # what actually cleared
-    da = client.plan_day_ahead(PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared))
+    da = client.plan_day_ahead(
+        PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared),
+        idempotency_key="my-bess-2026-04-15-day-ahead",
+    )
     for bid in da.bids:              # 96, signed: > 0 sells, < 0 buys
         ...
-    tomorrow_initial_soc = da.soc_end_mwh
+    tomorrow_initial_soc = da.soc_end_mwh    # or your measured state of charge at midnight
 ```
 
 `examples/plan_bess_day.py` is the runnable version.
@@ -101,8 +104,14 @@ with OperationalClient("https://operational.example.com", "op_...") as client:
   reservation and day-ahead and takes around ten minutes for two services;
   `planner="baseline"` answers in seconds.
 
-Request models reject unknown fields and re-check the server's rules
-locally, so a bad request fails before any HTTP call.
+Request models reject unknown fields and check the structural rules
+locally, before any HTTP call: one device per type, an export leg, D+1
+prices for a battery, services within the device's `ans_abilities`,
+forecast coverage, SOC within capacity, well-formed distributions. These
+raise `pydantic.ValidationError` when you build the request. What only
+the server can judge (timezone names, DST days, reservations against the
+power range, feasibility) comes back as the package's own exceptions
+below.
 
 ## What you get back
 
@@ -118,9 +127,10 @@ locally, so a bad request fails before any HTTP call.
 
 ## Errors and retries
 
-Every failure is an `OperationalError` subclass with `code`, `message`,
-`details` and `http_status`: `ValidationError` (the request cannot be planned
-as sent), `DayNotPlannableError` (DST day, or a battery day without D+1
+Every server-side failure is an `OperationalError` subclass with `code`,
+`message`, `details` and `http_status`: `ValidationError` (the server
+rejected the request; not the `pydantic.ValidationError` you get while
+building one), `DayNotPlannableError` (DST day, or a battery day without D+1
 prices), `InfeasibleError`, `AuthenticationError`, `IdempotencyConflictError`,
 `BusyError`, `ServerError`, `OperationalTimeoutError`, `TransportError`.
 

@@ -27,6 +27,15 @@ class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def check_battery_has_next_day_prices(site: object, day: object) -> None:
+    """Raise ``ValueError`` when a battery site is missing the D+1 prices (mirrors the server's rule)."""
+    if getattr(site, "battery", None) is not None and getattr(day, "da_price_eur_per_mwh_d1", None) is None:
+        raise ValueError(
+            "a battery site needs day.da_price_eur_per_mwh_d1: the planner values the midnight state "
+            "of charge against the next day's prices"
+        )
+
+
 class ResponseModel(BaseModel):
     """Base for everything received from the server: unknown fields are kept, not rejected."""
 

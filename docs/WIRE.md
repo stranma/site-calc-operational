@@ -38,7 +38,8 @@ ANSAbility         {service, min_device_power_rate, max_device_power_rate, soc_r
 Rules (checked by the client before sending, and by the server): at most one
 device per type, unique names, an `ElectricityExport` always, a `GasImport`
 with every `CHP`, `ans_abilities` on one device only, `initial_soc_mwh` not
-above `capacity_mwh`. Market fees are applied when planning (buy price plus
+above `capacity_mwh`, requested and cleared services within that device's
+`ans_abilities`, `chp_pins` only with a `CHP`, D+1 prices with a battery. Market fees are applied when planning (buy price plus
 fee, sell price minus fee); settlement stays at the market price.
 
 Services: `afrr_plus`, `afrr_minus`, `mfrr_plus`, `mfrr_minus`.
@@ -53,7 +54,8 @@ For a battery site `da_price_eur_per_mwh_d1` is mandatory: the planner
 dispatches over the 192 quarter-hours of D and D+1 so the midnight state of
 charge is valued, and commits only day D. A CHP-only site plans the 96
 quarter-hours of D. Days on which the clocks change, and for a battery site
-the day before one, are refused with `DayNotPlannableError`.
+the day before one, are refused by the server with `DayNotPlannableError`
+(the client always sends 96 prices; it does not know the timezone rules).
 
 ## Reservation step
 
@@ -117,6 +119,20 @@ Bids are price-taker: `volume_mw > 0` sells at -500 EUR/MWh, `< 0` buys at
 +4000 EUR/MWh. `soc_mwh[t]` is the state at the start of interval `t`;
 `soc_end_mwh` is the state at midnight after day D and is what you pass as
 the next day's `initial_soc_mwh`.
+
+## Health and runs
+
+```
+HealthInfo {status "ok"|"degraded", service_version, site_calc_version, site_calc_commit_sha, db_ok, active_solve}
+RunSummary {id, endpoint "plan-reservation"|"plan-day-ahead", status "ok"|"error"|"cancelled", created_at,
+            finished_at?, duration_ms?, solver_status?, client_idempotency_key?}
+RunDetail  = RunSummary + {request, response}     the body as validated and the body as returned
+RunsPage   {runs: [RunSummary, ...], next_before?}
+```
+
+`list_runs(endpoint=, status=, limit=, before=)` pages newest first; pass a
+page's `next_before` as `before` for the next page. `cancel_active()`
+returns True when a plan was interrupted and False when the server was idle.
 
 ## Errors
 

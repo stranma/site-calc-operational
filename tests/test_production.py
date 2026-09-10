@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import date
 
 import pytest
 
@@ -68,10 +69,10 @@ def test_full_day(live: OperationalClient, site, day, forecast) -> None:  # type
         assert da.soc_end_mwh is not None and 0.0 <= da.soc_end_mwh <= site.battery.capacity_mwh
         print(f"day-ahead objective {da.objective_eur:.2f} EUR, soc_end {da.soc_end_mwh:.3f} MWh")
 
+        # a day the clocks change on (Europe/Prague, 92 real quarter-hours) is refused by the server
+        dst_day = day.model_copy(update={"date": date(2026, 3, 29), "da_price_eur_per_mwh_d": [40.0] * 96})
         with pytest.raises(DayNotPlannableError):
-            client.plan_day_ahead(
-                PlanDayAheadRequest(site=site, day=day.model_copy(update={"da_price_eur_per_mwh_d1": None}))
-            )
+            client.plan_day_ahead(PlanDayAheadRequest(site=site, day=dst_day))
 
         page = client.list_runs(limit=5)
         assert {r.endpoint for r in page.runs} >= {"plan-reservation", "plan-day-ahead"}

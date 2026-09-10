@@ -182,3 +182,7 @@ class Site(RequestModel):
     def battery(self) -> Battery | None:
         """The site's battery, if any."""
         return next((d for d in self.devices if isinstance(d, Battery)), None)
+
+    def declared_services(self) -> set[str]:
+        """Service codes some device declares an ability for."""
+        return {a.service for d in self.devices for a in getattr(d, "ans_abilities", [])}
