@@ -5,7 +5,7 @@ the reservation gate, :meth:`OperationalClient.plan_day_ahead` before the
 day-ahead gate. Everything is typed; see :mod:`site_calc_operational.models`.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
 
 from site_calc_operational.client import (
     API_KEY_PREFIX,
@@ -39,6 +39,7 @@ from site_calc_operational.models import (
     AnsForecastEntry,
     Battery,
     ClearedReservation,
+    Composite,
     Day,
     DayAheadBid,
     DayAheadParams,
@@ -54,9 +55,11 @@ from site_calc_operational.models import (
     HeatExport,
     LogNormal,
     LogNormalFromQuantiles,
+    Market,
     MostProbableRealization,
     PlanDayAheadRequest,
     PlanReservationRequest,
+    Profile,
     ReservationBid,
     ReservationParams,
     ReservationPlan,
@@ -69,6 +72,7 @@ from site_calc_operational.models import (
     Schedule,
     ServiceCode,
     Site,
+    Storage,
 )
 
 __all__ = [
@@ -96,6 +100,10 @@ __all__ = [
     # Site
     "ANSAbility",
     "Battery",
+    "Market",
+    "Composite",
+    "Storage",
+    "Profile",
     "CHP",
     "Device",
     "ElectricityExport",

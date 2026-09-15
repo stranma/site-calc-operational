@@ -2,7 +2,7 @@
 
 Python client for the site-calc operational planning server. You bring the
 day-ahead price forecast and the reservation-market acceptance forecast; the
-server returns the bids for one delivery day of a battery (or CHP) site.
+server returns the bids for one delivery day of a general energy Site.
 
 Two calls per day, in the order the markets close:
 
@@ -15,7 +15,7 @@ Two calls per day, in the order the markets close:
    of charge to carry into tomorrow.
 
 The client is synchronous, fully typed (`py.typed`), and depends only on
-`httpx` and `pydantic`. Version 0.2.x talks to a 0.2.x server.
+`httpx` and `pydantic`. Version 0.4.x talks to a 0.4.x server.
 
 ## Installation
 
@@ -31,16 +31,29 @@ Python 3.10 or newer.
 ```python
 from datetime import date
 from site_calc_operational import (
-    ANSAbility, AnsForecastEntry, Battery, ClearedReservation, Day, ElectricityExport,
-    ElectricityImport, LogNormal, OperationalClient, PlanDayAheadRequest, PlanReservationRequest, Site,
+    ANSAbility,
+    AnsForecastEntry,
+    Battery,
+    ClearedReservation,
+    Day,
+    ElectricityExport,
+    ElectricityImport,
+    LogNormal,
+    OperationalClient,
+    PlanDayAheadRequest,
+    PlanReservationRequest,
+    Site,
 )
 
 site = Site(
     site_id="my-bess",
     devices=[
         Battery(
-            name="BESS", capacity_mwh=2.0, max_power_mw=1.0, efficiency=0.9,
-            initial_soc_mwh=1.0,                      # state at midnight; tomorrow: plan.soc_end_mwh
+            name="BESS",
+            capacity_mwh=2.0,
+            max_power_mw=1.0,
+            efficiency=0.9,
+            initial_soc_mwh=1.0,  # state at midnight; tomorrow: plan.soc_end_mwh
             ans_abilities=[
                 ANSAbility(service="afrr_plus", min_device_power_rate=0.0, max_device_power_rate=1.0),
                 ANSAbility(service="afrr_minus", min_device_power_rate=0.0, max_device_power_rate=1.0),
@@ -52,50 +65,54 @@ site = Site(
 )
 
 day = Day(
-    date=date(2026, 4, 15), tz="Europe/Prague",
-    da_price_eur_per_mwh_d=prices_d,      # 96 quarter-hour prices for the delivery day
-    da_price_eur_per_mwh_d1=prices_d1,    # 96 for the day after: required for a battery
+    date=date(2026, 4, 15),
+    tz="Europe/Prague",
+    da_price_eur_per_mwh_d=prices_d,  # 96 quarter-hour prices for the delivery day
+    da_price_eur_per_mwh_d1=prices_d1,  # 96 for the day after: required for any LER
 )
 
 forecast = [
-    AnsForecastEntry(service=s, block_index=b, distribution=LogNormal(mu=2.0, sigma=0.5),
-                     expected_activation_eur_per_mw_h=1.0)
-    for s in ("afrr_plus", "afrr_minus") for b in range(6)      # one entry per service and 4-hour block
+    AnsForecastEntry(
+        service=s, block_index=b, distribution=LogNormal(mu=2.0, sigma=0.5), expected_activation_eur_per_mw_h=1.0
+    )
+    for s in ("afrr_plus", "afrr_minus")
+    for b in range(6)  # one entry per service and 4-hour block
 ]
 
 with OperationalClient("https://operational.example.com", "op_...") as client:
     # 1. before the reservation gate
     plan = client.plan_reservation(
         PlanReservationRequest(site=site, day=day, services=["afrr_plus", "afrr_minus"], ans_forecast=forecast),
-        idempotency_key="my-bess-2026-04-15-reservation",     # a retry replays instead of re-planning
+        idempotency_key="my-bess-2026-04-15-reservation",  # a retry replays instead of re-planning
     )
     for bid in plan.bids:
         print(bid.service, bid.block_index, bid.volume_mw, bid.capacity_price_eur_per_mw_h)
     print(plan.expected_revenue.total)
 
     # 2. after clearing, before the day-ahead gate
-    cleared = [ClearedReservation(service="afrr_plus", block_index=2, volume_mw=1.0)]   # what actually cleared
+    cleared = [ClearedReservation(service="afrr_plus", block_index=2, volume_mw=1.0)]  # what actually cleared
     da = client.plan_day_ahead(
         PlanDayAheadRequest(site=site, day=day, cleared_reservations=cleared),
         idempotency_key="my-bess-2026-04-15-day-ahead",
     )
-    for bid in da.bids:              # 96, signed: > 0 sells, < 0 buys
+    for bid in da.bids:  # 96, signed: > 0 sells, < 0 buys
         ...
-    tomorrow_initial_soc = da.soc_end_mwh    # or your measured state of charge at midnight
+    tomorrow_initial_soc = da.soc_end_mwh  # or your measured state of charge at midnight
 ```
 
 `examples/plan_bess_day.py` is the runnable version.
 
 ## What you send
 
-- **`Site`**: one device per type. A battery site is `Battery` +
-  `ElectricityExport` (+ `ElectricityImport` to charge from the grid). A CHP
-  site is `CHP` + `GasImport` + `ElectricityExport` (+ `HeatExport`). Only
-  one device carries `ans_abilities`.
-- **`Day`**: the delivery day, its timezone, and 96 day-ahead prices for it.
-  A battery also needs the 96 prices of the following day: the planner
-  values the energy left in the battery at midnight against them. Days on
-  which the clocks change cannot be planned.
+- **`Site`**: any number of uniquely named devices, including repeated types.
+  Use `Battery`, `Storage` (including heat accumulators), `CHP`, `Profile`
+  (load, PV or other production), `Market`, `Composite`, and the convenience
+  grid/gas/heat market classes. At most one device declares `ans_abilities`.
+  Import-only, generation-only and physical feasibility Sites are supported.
+- **`Day`**: the delivery day, timezone and its 96 quarter-hour prices.
+  Any stored-energy device (LER) requires D+1 prices and 192-value profiles
+  for the whole Site. Without LER the solve has 96 intervals. Only D is bid.
+  DST transition days, including a required D+1, are currently unsupported.
 - **`ans_forecast`**: for each requested service and each of the six 4-hour
   blocks, how likely a bid is to clear as a function of its price
   (`LogNormal`, `LogNormalFromQuantiles` or `EmpiricalPercentiles`), and
@@ -105,8 +122,8 @@ with OperationalClient("https://operational.example.com", "op_...") as client:
   `planner="baseline"` answers in seconds.
 
 Request models reject unknown fields and check the structural rules
-locally, before any HTTP call: one device per type, an export leg, D+1
-prices for a battery, services within the device's `ans_abilities`,
+locally, before any HTTP call: unique device names, one ANS device, D+1
+prices for any LER, services within the device's `ans_abilities`,
 forecast coverage, SOC within capacity, well-formed distributions. These
 raise `pydantic.ValidationError` when you build the request. What only
 the server can judge (timezone names, DST days, reservations against the
@@ -121,7 +138,10 @@ below.
   engine versions, planner, horizon, solve time).
 - **`DayAheadPlan`**: 96 `bids`, the `schedule` over the whole horizon (net
   flow, state of charge and the bands the reservations impose),
-  `soc_end_mwh`, `objective_eur`, `market_fees_eur`, `run`.
+  `storage_soc_end_mwh` (per-device state at D/D+1), `objective_eur`,
+  `market_fees_eur`, `run`. `schedule.device_power` contains each device's
+  material flows and `schedule.storage_soc_mwh` has T+1 boundary states.
+  The legacy `soc_end_mwh` refers to the primary storage only.
 
 `docs/WIRE.md` lists every field.
 
@@ -130,7 +150,7 @@ below.
 Every server-side failure is an `OperationalError` subclass with `code`,
 `message`, `details` and `http_status`: `ValidationError` (the server
 rejected the request; not the `pydantic.ValidationError` you get while
-building one), `DayNotPlannableError` (DST day, or a battery day without D+1
+building one), `DayNotPlannableError` (DST day, or an LER day without D+1
 prices), `InfeasibleError`, `AuthenticationError`, `IdempotencyConflictError`,
 `BusyError`, `ServerError`, `OperationalTimeoutError`, `TransportError`.
 

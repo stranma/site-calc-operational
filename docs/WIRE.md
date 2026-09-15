@@ -35,12 +35,26 @@ ElectricityExport  {type="electricity_export", name, max_export_mw?, sell_fee_eu
 ANSAbility         {service, min_device_power_rate, max_device_power_rate, soc_reserve_fraction=0.25}
 ```
 
-Rules (checked by the client before sending, and by the server): at most one
-device per type, unique names, an `ElectricityExport` always, a `GasImport`
-with every `CHP`, `ans_abilities` on one device only, `initial_soc_mwh` not
-above `capacity_mwh`, requested and cleared services within that device's
-`ans_abilities`, `chp_pins` only with a `CHP`, D+1 prices with a battery. Market fees are applied when planning (buy price plus
-fee, sell price minus fee); settlement stays at the market price.
+Rules: device names are unique; types may repeat. At most one device declares
+`ans_abilities`. No particular market leg is mandatory: material balances determine
+feasibility. Each storage's initial state must fit its capacity. Fees modify the
+optimization tariff but bids settle at the supplied DA prices.
+
+Additional device types (all profiles span the entire solved horizon):
+
+- `storage` / `heat_accumulator`: material, capacity_mwh, max_power_mw,
+  efficiency, initial_soc_mwh, loss_rate, optional charge/discharge_efficiency.
+  Electrical storage may declare ANS; other stored-energy materials may not.
+- `electricity_demand`, `heat_demand`, `generic_demand`, `electricity_supply`,
+  `generic_supply`, `photovoltaic`: maximum_mw[], minimum_mw (scalar or array),
+  optional price_eur_per_mwh[], min_total_mwh and max_total_mwh. Generic types
+  specify material. Equal minimum/maximum represents fixed load/production.
+- `import_market` / `export_market`: material, price_eur_per_mwh[], max_flow_mw,
+  optional max_total_mwh. Electrical prices must equal the supplied DA prices.
+- `composite`: ordered sub_devices (CHP/profile), force_switch, start. Core
+  restrictions apply: no ANS, cumulative or temporal constraints on pieces.
+- `electricity_export.exclusive_with`: name of the electricity import leg
+  that must not run simultaneously.
 
 Services: `afrr_plus`, `afrr_minus`, `mfrr_plus`, `mfrr_minus`.
 
@@ -50,10 +64,10 @@ Services: `afrr_plus`, `afrr_minus`, `mfrr_plus`, `mfrr_minus`.
 Day {date, tz, da_price_eur_per_mwh_d[96], da_price_eur_per_mwh_d1[96]?}
 ```
 
-For a battery site `da_price_eur_per_mwh_d1` is mandatory: the planner
+For any Site with stored-energy devices (LER) `da_price_eur_per_mwh_d1` is mandatory: the planner
 dispatches over the 192 quarter-hours of D and D+1 so the midnight state of
-charge is valued, and commits only day D. A CHP-only site plans the 96
-quarter-hours of D. Days on which the clocks change, and for a battery site
+charge is valued, and commits only day D. A Site without LER plans the 96
+quarter-hours of D. Days on which the clocks change, and for an LER Site
 the day before one, are refused by the server with `DayNotPlannableError`
 (the client always sends 96 prices; it does not know the timezone rules).
 
@@ -103,7 +117,8 @@ PlanDayAheadRequest {site, day,
   metadata?}
 ```
 
-Battery sites pass `cleared_reservations`; CHP sites pass `chp_pins`.
+Electrical-storage ANS devices use `cleared_reservations`; CHP ANS devices use
+`chp_pins`. CHP plus storage still solves the full two-day horizon.
 
 Result:
 
@@ -133,6 +148,15 @@ RunsPage   {runs: [RunSummary, ...], next_before?}
 `list_runs(endpoint=, status=, limit=, before=)` pages newest first; pass a
 page's `next_before` as `before` for the next page. `cancel_active()`
 returns True when a plan was interrupted and False when the server was idle.
+
+
+Per-device results in 0.4:
+`schedule.device_power[device][material]` contains T signed power values;
+`schedule.storage_soc_mwh[device]` contains T+1 solver boundary states, including
+both horizon endpoints. `storage_soc_end_mwh[device]` is boundary 96 at midnight
+D/D+1, suitable for the next day's initial state. Legacy SOC fields identify the
+ANS storage, otherwise the first storage. SOC comes from the solver device state,
+not net grid exchange. Operational uses the monolithic optimizer throughout.
 
 ## Errors
 

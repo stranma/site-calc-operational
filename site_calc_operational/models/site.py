@@ -1,8 +1,7 @@
 """The site: one device list, typed by ``type``.
 
-A site has at most one device of each type and always an
-:class:`ElectricityExport`. Battery-only sites (battery + grid legs) are the
-common case; a CHP site adds ``gas_import`` and usually ``heat_export``.
+A Site may repeat device types; each device has a unique name. One device
+may declare ANS abilities. Any storage device extends planning to D+1.
 """
 
 from __future__ import annotations
@@ -95,7 +94,7 @@ class CHP(RequestModel):
 
 
 class GasImport(RequestModel):
-    """Gas supply at a flat tariff. Required when the site has a CHP."""
+    """Gas supply at a flat tariff."""
 
     type: Literal["gas_import"] = "gas_import"
     name: str = Field(min_length=1, max_length=100, description="Unique device name within the site.")
@@ -129,7 +128,7 @@ class ElectricityImport(RequestModel):
 
 
 class ElectricityExport(RequestModel):
-    """Grid sell leg. Every site has one."""
+    """Optional grid sell leg."""
 
     type: Literal["electricity_export"] = "electricity_export"
     name: str = Field(min_length=1, max_length=100, description="Unique device name within the site.")
@@ -140,9 +139,124 @@ class ElectricityExport(RequestModel):
         description="Fee subtracted from the day-ahead price when planning sales; settlement stays at market price.",
     )
 
+    exclusive_with: str | None = Field(
+        default=None, description="Name of an electricity import; prevents simultaneous buying and selling."
+    )
+
+
+class Storage(RequestModel):
+    """A limited-energy resource, including thermal or other material storage.
+
+    All profiles on its Site cover D and D+1. Energy is in MWh and power in MW.
+    """
+
+    type: Literal["storage", "heat_accumulator"] = "storage"
+    name: str = Field(min_length=1, max_length=100)
+    material: Literal["electricity", "heat", "gas", "hydrogen", "cooling", "steam"] = "heat"
+    capacity_mwh: float = Field(gt=0)
+    max_power_mw: float = Field(gt=0)
+    efficiency: float = Field(gt=0, le=1)
+    initial_soc_mwh: float = Field(ge=0)
+    loss_rate: float = Field(default=0.0, ge=0, lt=1)
+    charge_efficiency: float | None = Field(default=None, gt=0, le=1)
+    discharge_efficiency: float | None = Field(default=None, gt=0, le=1)
+    ans_abilities: list[ANSAbility] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _valid_storage(self) -> Storage:
+        if self.initial_soc_mwh > self.capacity_mwh:
+            raise ValueError("initial_soc_mwh must not exceed capacity_mwh")
+        if self.type == "heat_accumulator" and self.material != "heat":
+            raise ValueError("heat_accumulator stores heat")
+        if self.ans_abilities and self.material != "electricity":
+            raise ValueError("only electrical storage can declare electrical ANS abilities")
+        return self
+
+
+class Profile(RequestModel):
+    """A fixed or controllable load/supply, with profiles covering the solved horizon.
+
+    Equal minimum and maximum describes fixed demand/production. Otherwise
+    the optimizer selects values between them. Prices are EUR/MWh.
+    """
+
+    type: Literal[
+        "electricity_demand", "heat_demand", "generic_demand", "electricity_supply", "generic_supply", "photovoltaic"
+    ]
+    name: str = Field(min_length=1, max_length=100)
+    material: Literal["electricity", "heat", "gas", "hydrogen", "cooling", "steam"] = "electricity"
+    maximum_mw: list[float] = Field(min_length=1)
+    minimum_mw: list[float] | float = 0.0
+    price_eur_per_mwh: list[float] | None = None
+    min_total_mwh: float | None = Field(default=None, ge=0)
+    max_total_mwh: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _valid_profile(self) -> Profile:
+        expected: Literal["heat", "electricity"] = "heat" if self.type == "heat_demand" else "electricity"
+        if self.type not in ("generic_demand", "generic_supply"):
+            if "material" in self.model_fields_set and self.material != expected:
+                raise ValueError(f"{self.type} requires material {expected}")
+            self.material = expected
+        if self.min_total_mwh is not None and self.max_total_mwh is not None:
+            if self.min_total_mwh > self.max_total_mwh:
+                raise ValueError("min_total_mwh must not exceed max_total_mwh")
+        if any(v < 0 for v in self.maximum_mw):
+            raise ValueError("maximum_mw must be nonnegative")
+        minimum = self.minimum_mw if isinstance(self.minimum_mw, list) else [self.minimum_mw] * len(self.maximum_mw)
+        if len(minimum) != len(self.maximum_mw) or any(
+            lo < 0 or lo > hi for lo, hi in zip(minimum, self.maximum_mw, strict=True)
+        ):
+            raise ValueError("minimum_mw must match and lie within maximum_mw")
+        if self.price_eur_per_mwh is not None and len(self.price_eur_per_mwh) != len(self.maximum_mw):
+            raise ValueError("price profile must match maximum_mw")
+        return self
+
+
+class Market(RequestModel):
+    """A material market. Electrical market prices must match the supplied day prices."""
+
+    type: Literal["import_market", "export_market"]
+    name: str = Field(min_length=1, max_length=100)
+    material: Literal["electricity", "heat", "gas", "hydrogen", "cooling", "steam"]
+    price_eur_per_mwh: list[float] = Field(min_length=1)
+    max_flow_mw: float = Field(gt=0)
+    max_total_mwh: float | None = Field(default=None, ge=0)
+
+
+class Composite(RequestModel):
+    """Mutually exclusive operating pieces of one device, following core composite rules."""
+
+    type: Literal["composite"] = "composite"
+    name: str = Field(min_length=1, max_length=100)
+    sub_devices: list[CHP | Profile] = Field(min_length=2)
+    force_switch: bool = False
+    start: int | str | None = None
+
+    @model_validator(mode="after")
+    def _pieces(self) -> Composite:
+        if any(getattr(d, "ans_abilities", None) for d in self.sub_devices):
+            raise ValueError("core composite pieces cannot declare ANS abilities")
+        for d in self.sub_devices:
+            if any(
+                getattr(d, name, None) is not None
+                for name in ("min_total_mwh", "max_total_mwh", "max_starts_per_day", "min_continuous_run_hours")
+            ):
+                raise ValueError("composite pieces cannot carry cumulative or temporal constraints")
+        return self
+
 
 Device = Annotated[
-    Battery | CHP | GasImport | HeatExport | ElectricityImport | ElectricityExport,
+    Market
+    | Composite
+    | Battery
+    | CHP
+    | GasImport
+    | HeatExport
+    | ElectricityImport
+    | ElectricityExport
+    | Storage
+    | Profile,
     Field(discriminator="type"),
 ]
 """Any device the site may contain; the ``type`` field selects the model."""
@@ -151,28 +265,18 @@ Device = Annotated[
 class Site(RequestModel):
     """One site to plan.
 
-    Rules the server enforces (and this model checks first): at most one
-    device per type, unique names, an ``electricity_export`` always, a
-    ``gas_import`` whenever there is a ``chp``, and ``ans_abilities`` on at
-    most one device.
+    Names must be unique, and at most one device may declare ANS abilities.
+    Physical material balances decide which supplies and markets are needed.
     """
 
     site_id: str = Field(min_length=1, max_length=100, description="Your identifier for the site; echoed in runs.")
-    devices: list[Device] = Field(min_length=1, description="The site's devices, one per type.")
+    devices: list[Device] = Field(min_length=1, description="The site's devices, with unique names.")
 
     @model_validator(mode="after")
     def _shape(self) -> Site:
-        kinds = [d.type for d in self.devices]
-        dupes = sorted({k for k in kinds if kinds.count(k) > 1})
-        if dupes:
-            raise ValueError(f"at most one device per type; duplicated: {dupes}")
         names = [d.name for d in self.devices]
         if len(set(names)) != len(names):
             raise ValueError("device names must be unique")
-        if "electricity_export" not in kinds:
-            raise ValueError("site needs an electricity_export device")
-        if "chp" in kinds and "gas_import" not in kinds:
-            raise ValueError("a chp needs a gas_import device")
         with_abilities = [d.name for d in self.devices if getattr(d, "ans_abilities", None)]
         if len(with_abilities) > 1:
             raise ValueError(f"only one device may declare ans_abilities, got {with_abilities}")
@@ -182,6 +286,11 @@ class Site(RequestModel):
     def battery(self) -> Battery | None:
         """The site's battery, if any."""
         return next((d for d in self.devices if isinstance(d, Battery)), None)
+
+    @property
+    def has_ler(self) -> bool:
+        """Whether any stored-energy device requires a two-day solve."""
+        return any(isinstance(d, (Battery, Storage)) for d in self.devices)
 
     def declared_services(self) -> set[str]:
         """Service codes some device declares an ability for."""

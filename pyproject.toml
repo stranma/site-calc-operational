@@ -1,7 +1,7 @@
 [project]
 name = "site-calc-operational"
-version = "0.2.0"
-description = "Python client for the site-calc operational planning server: reservation and day-ahead bids for a battery or CHP site"
+version = "0.4.0"
+description = "Python client for the site-calc operational planning server: reservation and day-ahead bids for general energy Sites"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

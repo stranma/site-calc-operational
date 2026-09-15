@@ -46,12 +46,16 @@ from site_calc_operational.models.site import (
     CHP,
     ANSAbility,
     Battery,
+    Composite,
     Device,
     ElectricityExport,
     ElectricityImport,
     GasImport,
     HeatExport,
+    Market,
+    Profile,
     Site,
+    Storage,
 )
 
 __all__ = [
@@ -63,6 +67,10 @@ __all__ = [
     "ANSAbility",
     "AnsForecastEntry",
     "Battery",
+    "Market",
+    "Composite",
+    "Storage",
+    "Profile",
     "ClearedReservation",
     "Day",
     "DayAheadBid",

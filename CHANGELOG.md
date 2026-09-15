@@ -3,6 +3,13 @@
 All notable changes to `site-calc-operational` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-09-15
+
+- General Site wire models: repeated types, profiles, storage, markets and composites.
+- D+1 required for any stored-energy device; one ANS-capable device per Site.
+- Per-device dispatch, full storage paths and next-day state carry-over.
+- Replaces the retired operational API client with the typed planning client.
+
 ## [0.2.0] - 2026-09-10
 
 Rewritten from scratch against the operational planning server 0.2. The

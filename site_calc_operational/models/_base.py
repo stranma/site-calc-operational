@@ -24,14 +24,14 @@ QUARTER_HOURS_PER_DAY = 96
 class RequestModel(BaseModel):
     """Base for everything sent to the server: unknown fields are rejected."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 def check_battery_has_next_day_prices(site: object, day: object) -> None:
     """Raise ``ValueError`` when a battery site is missing the D+1 prices (mirrors the server's rule)."""
-    if getattr(site, "battery", None) is not None and getattr(day, "da_price_eur_per_mwh_d1", None) is None:
+    if getattr(site, "has_ler", False) and getattr(day, "da_price_eur_per_mwh_d1", None) is None:
         raise ValueError(
-            "a battery site needs day.da_price_eur_per_mwh_d1: the planner values the midnight state "
+            "a LER site needs day.da_price_eur_per_mwh_d1: the planner values the midnight state "
             "of charge against the next day's prices"
         )
 

@@ -100,6 +100,11 @@ class Schedule(ResponseModel):
     96 for a CHP site. Only the first ``committed_qh`` entries are bid.
     """
 
+    storage_soc_mwh: dict[str, list[float]] = Field(
+        default_factory=dict,
+        description="Per-device SOC at all boundaries, including initial and terminal states (T+1).",
+    )
+    device_power: dict[str, dict[str, list[float]]] = Field(default_factory=dict)
     net_flow_mw: list[float] = Field(description="Export minus import per quarter-hour.")
     committed_qh: int = Field(description="Entries that belong to day D and are bid (96).")
     soc_mwh: list[float] | None = Field(default=None, description="Battery state at the START of each interval.")
@@ -112,6 +117,9 @@ class Schedule(ResponseModel):
 class DayAheadPlan(ResponseModel):
     """Result of ``plan_day_ahead``."""
 
+    storage_soc_end_mwh: dict[str, float] = Field(
+        default_factory=dict, description="Each storage device state at the end of day D."
+    )
     bids: list[DayAheadBid] = Field(description="96 bids for day D, in quarter-hour order.")
     schedule: Schedule
     soc_end_mwh: float | None = Field(

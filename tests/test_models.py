@@ -11,6 +11,7 @@ from site_calc_operational import (
     AnsForecastEntry,
     Battery,
     ClearedReservation,
+    Composite,
     Day,
     DayAheadPlan,
     ElectricityExport,
@@ -20,27 +21,22 @@ from site_calc_operational import (
     LogNormalFromQuantiles,
     PlanDayAheadRequest,
     PlanReservationRequest,
+    Profile,
     ReservationPlan,
     Site,
+    Storage,
 )
 
 
-def test_site_requires_export_and_unique_types() -> None:
-    """Failure mode: a site without a grid sell leg would be a server-side 422 instead of an instant error."""
+def test_site_accepts_repeated_types_and_import_only_sites() -> None:
     battery = Battery(name="b", capacity_mwh=1, max_power_mw=1, efficiency=0.9, initial_soc_mwh=0)
-    with pytest.raises(PydanticValidationError, match="electricity_export"):
-        Site(site_id="s", devices=[battery])
-    with pytest.raises(PydanticValidationError, match="one device per type"):
-        Site(
-            site_id="s",
-            devices=[ElectricityExport(name="a"), ElectricityExport(name="b")],
-        )
+    assert Site(site_id="s", devices=[battery]).has_ler
+    assert len(Site(site_id="s", devices=[ElectricityExport(name="a"), ElectricityExport(name="b")]).devices) == 2
+    with pytest.raises(PydanticValidationError, match="names must be unique"):
+        Site(site_id="s", devices=[battery, battery])
 
 
 def test_site_chp_needs_gas_and_single_ans_device() -> None:
-    chp = CHP(name="chp", gas_input_mw=2.5, el_output_mw=1.0, heat_output_mw=1.3)
-    with pytest.raises(PydanticValidationError, match="gas_import"):
-        Site(site_id="s", devices=[chp, ElectricityExport(name="el")])
     ability = ANSAbility(service="afrr_plus", min_device_power_rate=0.0, max_device_power_rate=1.0)
     chp_ans = CHP(name="chp", gas_input_mw=2.5, el_output_mw=1.0, heat_output_mw=1.3, ans_abilities=[ability])
     bess_ans = Battery(
@@ -188,3 +184,25 @@ def test_response_models_tolerate_new_fields(reservation_plan_body: dict, day_ah
     assert plan.bids[0].interval_start.isoformat() == "2026-04-15T08:00:00+02:00"
     da = DayAheadPlan.model_validate({**day_ahead_plan_body, "schedule": {**day_ahead_plan_body["schedule"], "x": 1}})
     assert len(da.bids) == 96 and da.soc_end_mwh == 0.75 and da.schedule.committed_qh == 96
+
+
+def test_general_profiles_and_thermal_horizon(day: Day) -> None:
+    heat = Profile(type="heat_demand", name="load", maximum_mw=[1.0] * 192)
+    assert heat.material == "heat"
+    with pytest.raises(PydanticValidationError, match="requires material"):
+        Profile(type="electricity_demand", material="heat", name="wrong", maximum_mw=[1.0] * 96)
+    with pytest.raises(PydanticValidationError, match="min_total_mwh"):
+        Profile(type="generic_supply", name="wrong", maximum_mw=[1.0], min_total_mwh=2, max_total_mwh=1)
+    store = Storage(name="tank", capacity_mwh=5, max_power_mw=2, efficiency=1, initial_soc_mwh=3)
+    site = Site(site_id="heat", devices=[heat, store])
+    assert site.has_ler and site.battery is None
+    with pytest.raises(PydanticValidationError, match="da_price_eur_per_mwh_d1"):
+        PlanDayAheadRequest(site=site, day=day.model_copy(update={"da_price_eur_per_mwh_d1": None}))
+    assert PlanDayAheadRequest(site=site, day=day).site.devices[0].name == "load"
+
+
+def test_composite_rejects_unsupported_piece_constraints() -> None:
+    idle = Profile(type="electricity_supply", name="idle", maximum_mw=[0.0] * 96)
+    active = CHP(name="active", gas_input_mw=2, el_output_mw=1, heat_output_mw=0, max_starts_per_day=1)
+    with pytest.raises(PydanticValidationError, match="cumulative or temporal"):
+        Composite(name="unit", sub_devices=[idle, active])
